@@ -60,7 +60,7 @@ def resolve_device(cfg, logger=None) -> str:
 
 
 def resolve_batch_size(configured, dataset, compute_losses, optimizer, model,
-                       device, cfg, logger=None) -> int:
+                       device, cfg, logger=None, probe_unfreeze=0) -> int:
     """
     Return an integer batch size.
 
@@ -69,8 +69,14 @@ def resolve_batch_size(configured, dataset, compute_losses, optimizer, model,
     :func:`newsrec.training.batch_finder.find_max_batch_size`). On non-CUDA
     devices auto-sizing is not possible, so a ``fallback_batch_size`` is used.
 
+    ``probe_unfreeze`` : if > 0, temporarily unfreeze the top-N PLM layers while
+    probing. This is essential when a LoRA-unfreeze schedule will unfreeze base
+    layers during training: a LoRA-only probe drastically under-estimates memory
+    (frozen base weights let autograd discard the large FFN activations), so
+    without this the chosen batch would OOM once layers unfreeze.
+
     Relevant ``cfg`` keys: ``max_batch_size`` (search cap, default 256),
-    ``batch_safety`` (headroom multiplier, default 0.9),
+    ``batch_safety`` (headroom multiplier, default 0.95),
     ``fallback_batch_size`` (CPU fallback, default 8).
     """
     auto = (isinstance(configured, str) and configured.lower() == "auto") \
@@ -105,10 +111,25 @@ def resolve_batch_size(configured, dataset, compute_losses, optimizer, model,
         optimizer.zero_grad(set_to_none=True)
 
     cap = max(1, min(int(cfg.get("max_batch_size", 256)), len(dataset)))
-    found = find_max_batch_size(
-        _build, _probe, device=device, max_batch=cap,
-        safety=float(cfg.get("batch_safety", 0.9)), logger=logger,
-    )
+
+    # Probe at the worst-case (max-unfreeze) memory state so the chosen batch
+    # stays safe after the schedule unfreezes base layers mid-training.
+    plm = getattr(model, "plm", None)
+    restore_unfreeze = False
+    if probe_unfreeze and plm is not None and hasattr(plm, "set_trainable_layers"):
+        if logger:
+            logger.info(f"batch-finder probing with top-{probe_unfreeze} PLM layers "
+                        f"unfrozen (worst-case memory)")
+        plm.set_trainable_layers(int(probe_unfreeze))
+        restore_unfreeze = True
+    try:
+        found = find_max_batch_size(
+            _build, _probe, device=device, max_batch=cap,
+            safety=float(cfg.get("batch_safety", 0.95)), logger=logger,
+        )
+    finally:
+        if restore_unfreeze:
+            plm.set_trainable_layers(0)  # train loop's scheduler sets the real epoch-0 state
     if found is None:
         fallback = int(cfg.get("fallback_batch_size", 8))
         if logger:

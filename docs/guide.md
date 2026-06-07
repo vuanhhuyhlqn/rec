@@ -13,15 +13,15 @@ All commands assume you are in the `rec/` directory unless stated otherwise.
 ```bash
 cd rec
 
-# environment
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
+# environment (fresh machine): installs uv + cu128 torch, verifies GPU, fetches data
+bash setup.sh --with-data
+source .venv/bin/activate
 
-# sanity-check the data + the whole pipeline (CPU, seconds)
+# sanity-check the data + the whole pipeline
 python -m newsrec.scripts.prepare_data
 python -m pytest tests/test_smoke.py
 
-# run one scenario end-to-end (pretrain -> PAAC finetune)
+# run one scenario end-to-end (pretrain -> PAAC finetune); batch size auto-detected
 bash scripts/pretrain_full.sh device=cuda
 ```
 
@@ -29,29 +29,38 @@ bash scripts/pretrain_full.sh device=cuda
 
 ## 1. Environment setup
 
-Requirements: Python ≥ 3.10. The project is `uv`-managed.
+Requirements: Python ≥ 3.10, `uv`. **Easiest path — `setup.sh`** (idempotent):
+
+```bash
+cd rec
+bash setup.sh                                    # uv + deps + GPU verify
+HUGGINGFACE_TOKEN=hf_xxx bash setup.sh --with-data   # also write .env + prefetch data
+```
+
+Or manually:
 
 ```bash
 cd rec
 uv venv
 source .venv/bin/activate
-uv pip install -e ".[dev]"     # installs torch, transformers, peft, hf_hub, sklearn, pytest, ...
+uv pip install -e ".[dev]"     # installs torch(cu128), transformers, peft, hf_hub, sklearn, pytest, ...
 ```
 
-Dependencies (from `pyproject.toml`): `torch`, `transformers`, `peft`,
-`huggingface_hub`, `scikit-learn`, `numpy`, `pandas`, `pyyaml`, `tqdm`; dev
-extra adds `pytest`.
+Dependencies (from `pyproject.toml`): `torch>=2.7` (pinned to the **cu128** wheel
+index), `transformers`, `peft`, `huggingface_hub`, `scikit-learn`, `numpy`,
+`pandas`, `pyyaml`, `tqdm`; dev extra adds `pytest`.
 
-> If you are not using `uv`, a plain `pip install -e ".[dev]"` inside any venv
-> works too. The first run downloads `bert-base-uncased` weights + tokenizer
-> from HuggingFace (cached afterwards).
+> **torch / CUDA**: the cu128 pin makes `uv sync` produce a GPU build compatible
+> with CUDA-12.8 drivers and Blackwell GPUs. The default PyPI cu13 wheels report
+> `cuda.is_available() == False` on those drivers → a silent CPU run → host OOM.
+> The first run downloads `distilbert-base-uncased` weights + tokenizer (cached).
 
 ---
 
 ## 2. Data
 
 ### Already-present local data
-The MIND-small split lives in `rec/MINDsmall_train/` and `rec/MINDsmall_dev/`
+The MIND-small split lives in `rec/dataset/train/` and `rec/dataset/dev/`
 (`news.tsv`, `behaviors.tsv`, and `popularity_data.csv` in train).
 
 Inspect it:
@@ -104,14 +113,16 @@ Writes checkpoints to `checkpoints/<run_name>/pretrain/{epochN, best}` (run_name
 ### Stage 2 — PAAC fine-tuning
 ```bash
 python -m newsrec.scripts.run_finetune --config newsrec/config/finetune/paac.yaml \
+    device=cuda data.max_history=30 \
     finetune.pretrained_ckpt=checkpoints/pretrain_full/pretrain/best
 ```
 Trains BPR + L_sa + L_cl, evaluates on the dev split each epoch (AUC / MRR /
 nDCG@5 / nDCG@10), and saves `checkpoints/<run_name>/finetune/{epochN, best}`
-(`best` = best dev AUC).
+(`best` = best dev AUC). `device` defaults to `auto`; `batch_size` defaults to
+`auto` (probed — see §5.1). Use the **same `max_history`** in both stages.
 
 Omit `finetune.pretrained_ckpt` (or leave it `null`) to fine-tune from scratch
-(the baseline).
+(the baseline). Run long jobs inside `tmux` (detach with `Ctrl-b d`).
 
 ---
 
@@ -184,15 +195,32 @@ Precedence (low → high): `_base_` files → current file → `overrides` dict 
 `cli_overrides`.
 
 Key knobs (full schema in `architecture.md` §9):
-- `device`: `cpu` or `cuda`.
+- `device`: `auto` (default; cuda if available else cpu), `cuda`, or `cpu`.
 - `data.max_title_len`, `data.max_history`, `data.mask_prob`.
-- `model.model_dim`, `model.plm.{lora_r, lora_alpha}`, `model.score.temperature`.
-- `finetune.{lambda1, lambda2, lambda3, cl_beta, cl_gamma, cl_tau, sa_ratio}`.
-- `finetune.lora_schedule`: list of `[epoch, num_top_BERT_layers_trainable]`.
+- `model.model_dim`, `model.plm.{model_name, lora_r, lora_alpha}`, `model.score.temperature`.
+- `model.news_encoder.num_heads` / `model.user_encoder.num_heads` (default 16).
+- `finetune.{lambda1, lambda2, lambda3, cl_beta, cl_gamma, cl_tau, sa_ratio, cl_x_percent}`.
+- `finetune.{batch_size, max_batch_size, batch_safety, amp}` (see §5.1).
+- `finetune.lora_schedule`: list of `[epoch, num_top_PLM_layers_trainable]`
+  (clamped to the PLM layer count — DistilBERT has 6).
 
-Defaults (overridable): τ=0.1, mask ratio=0.15, PAAC x=50%, β=1.0, γ=0.5,
-λ1=λ2=0.1, λ3=1e-4, model_dim=256, Fastformer 2 layers × 8 heads, history=50,
-title+abstract tokens=64, PLM=bert-base-uncased.
+Defaults (overridable): τ=0.1, mask ratio=0.15, **PAAC popular split x=80% /
+sa_ratio=0.8**, β=1.0, γ=0.5, λ1=λ2=0.1, λ3=1e-4, model_dim=256, **Fastformer 2
+layers × 16 heads**, history=50, title+abstract tokens=64, **PLM =
+distilbert-base-uncased** (6 layers), bf16 AMP on, batch_size=auto.
+
+### 5.1 Auto batch size & mixed precision
+
+- `finetune.batch_size: auto` (default) probes the GPU for the largest batch
+  that fits and applies `batch_safety` (0.95). It probes the **worst case** —
+  the longest histories *and* the schedule's maximum layer unfreeze — so the
+  chosen batch stays safe even after `lora_schedule` unfreezes layers mid-run.
+  Pin an integer to disable; on CPU it uses `fallback_batch_size` (8).
+- `max_batch_size` caps the search (default 256).
+- `amp: true` enables **bf16 mixed precision** on GPU (~1.5–2× faster, lower
+  memory; no-op on CPU).
+- ⚠️ On a **shared** GPU the finder can be unstable (a co-tenant's memory use
+  fluctuates) — prefer pinning `finetune.batch_size` to a value you've verified.
 
 ---
 
@@ -241,9 +269,11 @@ Every run writes to console and a file:
 ```
 rec/logs/{stage}_{run_name}_{timestamp}.log
 ```
-Logged each step/epoch: the loss breakdown (`L_rec`, `L_sa`, `L_cl`, and each
-pre-train task), learning rate context, LoRA unfreeze events, and dev metrics
-at evaluation.
+The **console** shows a tqdm progress bar (total batches, it/s, ETA) plus epoch
+summaries, LoRA-unfreeze events, and dev metrics. The detailed **per-step loss
+breakdown** (`L_rec`, `L_sa`, `L_cl`, and each pre-train task) is written at
+DEBUG to the **file only**, so it never breaks the progress bar. Set
+`logging.level=DEBUG` to also show step lines on the console.
 
 Outputs land in (all git-ignored):
 - `rec/logs/` — run logs.
@@ -275,12 +305,13 @@ print(metrics)  # {'auc':..., 'mrr':..., 'ndcg@5':..., 'ndcg@10':...}
 
 ```bash
 cd rec
-python -m pytest                      # full suite (~101 tests, ~30s)
+python -m pytest                      # full suite (~109 tests, ~35s)
 python -m pytest tests/test_smoke.py  # end-to-end tiny pipeline only
 python -m pytest -k paac              # filter by name
 ```
 Tests are offline-safe (tiny random BERT, fake HF API). Real-data tests skip if
-`MINDsmall_*` is absent. After any change, run the suite before committing.
+`dataset/train` is absent. After any change, run the full suite (in default
+order) before committing.
 
 ---
 
@@ -318,12 +349,17 @@ python -m pytest tests/test_smoke.py
 
 | Symptom | Likely cause / fix |
 |---|---|
+| Process **`Killed`** (no traceback), runs on CPU | torch can't see the GPU — usually the wrong CUDA build. Check `.venv/bin/python -c "import torch;print(torch.__version__, torch.cuda.is_available())"`. Reinstall the cu128 build (`uv pip install --reinstall torch --index-url https://download.pytorch.org/whl/cu128`) or run `setup.sh`. |
+| `torch.cuda.OutOfMemoryError` mid-epoch (after a few epochs) | Batch chosen too large once layers unfreeze. Ensure you're on the version that probes at max-unfreeze; lower `batch_safety`, pin a smaller `finetune.batch_size`, or reduce `data.max_history`. |
+| Auto batch picks `1` / wildly varying sizes | **Shared GPU** — a co-tenant's memory fluctuates during the probe. Pin `finetune.batch_size` to a verified value. |
+| Epoch ETA absurdly long (tqdm total == #triplets) | `batch_size` resolved to 1. See the two rows above; pin the batch. |
 | `IndexError: index out of range in self` during forward/eval | Sequence longer than Fastformer position capacity. Increase `model.max_title_len` / `model.max_history_len`, or lower `data.max_history`. |
-| `FileNotFoundError: news.tsv not found` | Local split missing and auto-download disabled/misconfigured. Set `data.hf_dataset_repo` + `data.auto_download: true`, or fix `data.train_dir`. |
-| HF upload silently does nothing | `hub.push_to_hub` false or no token. Check the log line `HF push enabled; token detected: ...`. |
+| `Index put requires ... dtypes match` in `encode_news` | The pad-skip buffer dtype must match the encoder output (autocast bf16). Already handled; don't revert that. |
+| `FileNotFoundError: news.tsv not found` | Local split missing and auto-download disabled/misconfigured. Set `data.hf_dataset_repo` + `data.auto_download: true` + `data.download_dir`, or fix `data.train_dir`. |
+| HF upload silently does nothing | `hub.push_to_hub` false or no token. Check the log for the device/token line. |
 | `peft` UserWarning about missing config when saving | Benign; LoRA adapters still save correctly. |
-| Pretrained weights don't seem to load | Confirm `finetune.pretrained_ckpt` points at a dir containing `model.pt`; the log prints `missing=/unexpected=` counts (Modules 0/1/2 keys should match → missing≈0). |
-| Out of memory on GPU | Lower `*.batch_size`, `model.model_dim`, `data.max_history`, or keep BERT LoRA-only (don't unfreeze layers via `finetune.lora_schedule`). |
+| Pretrained weights don't seem to load | Confirm `finetune.pretrained_ckpt` points at a dir containing `model.pt`; the log prints `missing=/unexpected=` counts (should be ~0). |
+| Out of memory on GPU (up front) | Lower `finetune.batch_size` / `data.max_history` / `model.model_dim`, keep AMP on, or use fewer unfrozen layers in `finetune.lora_schedule`. |
 | Two scenarios overwrote each other's checkpoints | They shared a `run_name`. Give each run a unique `run_name`. |
 
 ---

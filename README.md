@@ -14,7 +14,7 @@ that tackles popularity (long-tail) bias through two complementary mechanisms:
 news text (title + abstract)
         │
         ▼
-Module 0:  BERT (bert-base-uncased) + LoRA   ── word embeddings [B, L, D]
+Module 0:  DistilBERT (distilbert-base-uncased) + LoRA  ── word embeddings [B, L, D]
         │                                        (gradual layer unfreezing)
         ▼
 Module 1:  Fastformer news encoder            ── news vector  h_i  [B, D]
@@ -28,24 +28,43 @@ score(z_u, candidate h_i) = cosine similarity
 
 The same Modules 0/1/2 are shared between the pre-training and fine-tuning
 stages; a pre-trained checkpoint can be loaded as the fine-tuning backbone.
+The PLM encoder is architecture-aware — it auto-detects LoRA target modules and
+layer names for both BERT and DistilBERT families.
 
 ## Layout
 
 ```
 newsrec/
   config/      base.yaml + pretrain/ + finetune/ + smoke/ presets
-  data/        MIND parsing, vocab, popularity p(i), datasets, token table
+  data/        MIND parsing, vocab, popularity p(i), datasets, token table,
+               download (HF auto-download)
   models/      plm_encoder, fastformer, news_encoder, user_encoder,
                attention_pooler, rec_model, pretrain_model
   losses/      infonce, pretrain_losses (AAP/MIP/MAP/SP/BSM), paac_losses
                (BPR / L_sa / L_cl)
   eval/        metrics (AUC/MRR/nDCG@5/@10), impression evaluator
-  training/    lora_schedule, finetuner, pretrainer, checkpoint, hub_uploader
-  scripts/     prepare_data, run_pretrain, run_finetune
-tests/         pytest suite (shape/dimension + smoke)
+  training/    lora_schedule, finetuner, pretrainer, checkpoint, hub_uploader,
+               batch_finder (auto batch size)
+  utils/       config, logging, seed, env (dotenv + HF token)
+  scripts/     prepare_data, run_pretrain, run_finetune, push_dataset, common
+scripts/       *.sh runners (setup.sh, pretrain_<scenario>.sh, ...)
+dataset/       train/ + dev/  (local or auto-downloaded; git-ignored)
+docs/          guide.md + architecture.md
+tests/         pytest suite (shape/dimension + smoke + batch finder)
 ```
 
 ## Setup (uv)
+
+On a fresh machine, the bootstrap script installs `uv`, syncs deps (the CUDA
+12.8 torch build), verifies the GPU, and optionally pre-downloads the data:
+
+```bash
+cd rec
+bash setup.sh                                   # deps + GPU check
+HUGGINGFACE_TOKEN=hf_xxx bash setup.sh --with-data   # also writes .env + fetches data
+```
+
+Or manually:
 
 ```bash
 cd rec
@@ -53,8 +72,12 @@ uv venv
 uv pip install -e ".[dev]"
 ```
 
-The MIND small split is expected in `rec/MINDsmall_train` and
-`rec/MINDsmall_dev` (already present here).
+> torch is pinned to the **cu128** wheel index in `pyproject.toml` so a fresh
+> `uv sync` produces a GPU build compatible with CUDA 12.8 drivers and Blackwell
+> GPUs (the default PyPI wheels ship a cu13 build that fails on those drivers).
+
+The MIND small split lives in `rec/dataset/train` and `rec/dataset/dev` (present
+locally, or auto-downloaded — see below).
 
 Inspect the data:
 
@@ -67,7 +90,8 @@ python -m newsrec.scripts.prepare_data
 The MIND splits are published as a HuggingFace **dataset** repo so a fresh
 machine needs no manual data copy. The default config points at
 `huyva/mind-small` with `auto_download: true`; the splits are fetched only when
-the local `MINDsmall_train` / `MINDsmall_dev` directories are missing.
+the local `dataset/train` / `dataset/dev` directories are missing, and land in a
+project-local `dataset/` directory (not the global HF cache).
 
 Re-publish (or push to your own repo):
 
@@ -82,6 +106,7 @@ Point a run at a different repo (or disable remote fetch):
 data:
   hf_dataset_repo: your-username/mind-small   # or null to disable
   auto_download: true
+  download_dir: dataset
 ```
 
 ## Pre-train scenarios (task combinations)
@@ -111,8 +136,8 @@ each other.
 
 ## Training (run off-machine / on GPU)
 
-Set `device: cuda` in the config (or override on the CLI). Configs support
-inheritance via `_base_` and dotted `key=value` CLI overrides.
+`device` defaults to `auto` (uses CUDA if a GPU is visible, else CPU). Configs
+support inheritance via `_base_` and dotted `key=value` CLI overrides.
 
 Pre-train with all five tasks, then PAAC fine-tune from that checkpoint:
 
@@ -125,14 +150,36 @@ python -m newsrec.scripts.run_finetune --config newsrec/config/finetune/paac.yam
     finetune.pretrained_ckpt=checkpoints/pretrain_full/pretrain/best
 ```
 
-Ablations (single pre-train task) — edit the `tasks` list or use the preset:
+Ablations (single pre-train task) — use a preset or override the `tasks` list:
 
 ```bash
-python -m newsrec.scripts.run_pretrain --config newsrec/config/pretrain/ablation_mip.yaml
+python -m newsrec.scripts.run_pretrain --config newsrec/config/pretrain/mip_only.yaml
 # or override inline:
 python -m newsrec.scripts.run_pretrain --config newsrec/config/pretrain/full.yaml \
     pretrain.tasks='[aap, bsm]'
 ```
+
+### Performance & memory
+
+Several optimizations keep training fast and OOM-safe:
+
+* **bf16 mixed precision** (`amp: true`, GPU only) — ~1.5–2× faster, lower
+  memory.
+* **Padding-skip encoding** — the news encoder runs BERT only on real history
+  items, not padded slots (~2× on short histories).
+* **Auto batch size** — set `finetune.batch_size: auto` (default) to probe the
+  GPU for the largest batch that fits (no OOM). It probes the *worst-case*
+  state (longest histories **and** the schedule's maximum layer unfreeze) and
+  applies a `batch_safety` margin (0.95). Pin an integer to disable.
+* On a **shared** GPU prefer pinning the batch — co-tenant memory fluctuates and
+  can make the finder under/over-shoot.
+
+```bash
+python -m newsrec.scripts.run_finetune --config newsrec/config/finetune/paac.yaml \
+    device=cuda data.max_history=30 finetune.batch_size=auto
+```
+
+Run long jobs inside `tmux` and detach (`Ctrl-b d`) so they survive disconnects.
 
 ### Choosing pre-train tasks
 
@@ -151,9 +198,12 @@ pretrain:
 ## Logging
 
 Every run writes to both the console and a timestamped file
-`logs/{stage}_{run_name}_{timestamp}.log`, capturing the per-step / per-epoch
-loss breakdown (`L_rec`, `L_sa`, `L_cl`, and each pre-train task), the learning
-rate, LoRA unfreeze events, and dev metrics (AUC / MRR / nDCG@5 / nDCG@10).
+`logs/{stage}_{run_name}_{timestamp}.log`. A **tqdm progress bar** shows
+per-epoch progress (total batches, it/s, ETA) on the console; the detailed
+**per-step loss breakdown** (`L_rec`, `L_sa`, `L_cl`, and each pre-train task)
+is logged at DEBUG to the **file only**, so it doesn't break the progress bar.
+Epoch summaries, LoRA-unfreeze events, and dev metrics (AUC / MRR / nDCG@5 /
+nDCG@10) appear on both.
 
 ## HuggingFace checkpointing
 
@@ -203,16 +253,19 @@ python -m pytest tests/test_smoke.py   # end-to-end smoke test only
 
 | Component | Value |
 |---|---|
-| PLM | bert-base-uncased + LoRA (r=8, α=16) |
+| PLM | distilbert-base-uncased + LoRA (r=8, α=16) |
 | Model dim | 256 |
-| Fastformer | 2 layers, 8 heads |
-| History length | 50 |
+| Fastformer | 2 layers, 16 heads |
+| History length | 50 (use 30 for faster/lighter runs) |
 | Title+abstract tokens | 64 |
 | InfoNCE temperature τ | 0.1 |
 | MIP mask ratio | 0.15 |
-| PAAC x% (batch pop split) | 50% |
+| PAAC popular split (x% / sa_ratio) | 80% / 0.8 |
 | PAAC β / γ | 1.0 / 0.5 |
 | λ1 / λ2 / λ3 | 0.1 / 0.1 / 1e-4 |
+| Mixed precision | bf16 (`amp: true`, GPU) |
+| Batch size | `auto` (probed) + 0.95 safety |
+| Device | `auto` (cuda if available) |
 
 All are overridable via YAML or CLI.
 

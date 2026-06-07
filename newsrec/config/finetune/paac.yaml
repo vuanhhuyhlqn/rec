@@ -13,7 +13,7 @@ finetune:
   # Set an integer to pin it. On CPU, auto falls back to fallback_batch_size.
   batch_size: auto
   max_batch_size: 256      # upper bound for the auto search
-  batch_safety: 0.9        # use 90% of the largest fitting batch (headroom)
+  batch_safety: 0.95       # use 95% of the largest fitting batch (headroom)
   fallback_batch_size: 8   # used when auto is requested but no GPU is present
   num_workers: 4
 

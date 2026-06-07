@@ -84,7 +84,7 @@ def find_max_batch_size(
     device,
     min_batch: int = 1,
     max_batch: int = 256,
-    safety: float = 0.9,
+    safety: float = 0.95,
     logger=None,
 ) -> Optional[int]:
     """

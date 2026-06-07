@@ -53,10 +53,14 @@ def run_finetune(cfg):
     model = build_rec_model(cfg.get("model", {}).to_dict() if cfg.get("model") else {})
 
     scheduler = None
+    probe_unfreeze = 0
     sched_cfg = cfg.get("finetune.lora_schedule")
     if sched_cfg:
         sched_list = sched_cfg.to_dict() if hasattr(sched_cfg, "to_dict") else sched_cfg
         scheduler = LoRAUnfreezeScheduler(model.plm, schedule=sched_list)
+        # Max layers the schedule will ever unfreeze -> probe memory at that state.
+        probe_unfreeze = min(model.plm.num_layers,
+                             max(int(n) for _, n in sched_list))
 
     ckpt = build_checkpoint_manager(cfg, "finetune", logger, tokenizer=encoder.tokenizer)
 
@@ -77,7 +81,7 @@ def run_finetune(cfg):
 
     batch_size = resolve_batch_size(
         ft_cfg.get("batch_size", 16), dataset, tuner.compute_losses, tuner.optimizer,
-        tuner.model, device, ft_cfg, logger,
+        tuner.model, device, ft_cfg, logger, probe_unfreeze=probe_unfreeze,
     )
 
     loader = DataLoader(
