@@ -27,7 +27,6 @@ from newsrec.scripts.common import (
     resolve_device,
 )
 from newsrec.training.finetuner import Finetuner
-from newsrec.training.lora_schedule import LoRAUnfreezeScheduler
 from newsrec.utils.config import load_config
 from newsrec.utils.env import load_dotenv
 from newsrec.utils.seed import set_seed
@@ -51,16 +50,8 @@ def run_finetune(cfg):
     logger.info(f"Finetune triplets: {len(dataset)}")
 
     model = build_rec_model(cfg.get("model", {}).to_dict() if cfg.get("model") else {})
-
-    scheduler = None
-    probe_unfreeze = 0
-    sched_cfg = cfg.get("finetune.lora_schedule")
-    if sched_cfg:
-        sched_list = sched_cfg.to_dict() if hasattr(sched_cfg, "to_dict") else sched_cfg
-        scheduler = LoRAUnfreezeScheduler(model.plm, schedule=sched_list)
-        # Max layers the schedule will ever unfreeze -> probe memory at that state.
-        probe_unfreeze = min(model.plm.num_layers,
-                             max(int(n) for _, n in sched_list))
+    # Training is LoRA-only from the start: the PLM base weights stay frozen and
+    # only the LoRA adapters (+ the encoders/heads) train. No gradual unfreeze.
 
     ckpt = build_checkpoint_manager(cfg, "finetune", logger, tokenizer=encoder.tokenizer)
 
@@ -68,12 +59,12 @@ def run_finetune(cfg):
     ft_cfg = ft_cfg.to_dict() if hasattr(ft_cfg, "to_dict") else dict(ft_cfg)
     # only pass the trainer-relevant keys
     trainer_cfg = {k: v for k, v in ft_cfg.items()
-                   if k not in ("lora_schedule", "pretrained_ckpt", "negatives_per_pos",
+                   if k not in ("pretrained_ckpt", "negatives_per_pos",
                                 "batch_size", "num_workers")}
     trainer_cfg["max_history"] = int(cfg.get("data.max_history", 50))
 
     tuner = Finetuner(model, config=trainer_cfg, device=device, logger=logger,
-                      scheduler=scheduler, popularity=popularity, checkpoint_manager=ckpt)
+                      popularity=popularity, checkpoint_manager=ckpt)
 
     pretrained = cfg.get("finetune.pretrained_ckpt")
     if pretrained:
@@ -81,7 +72,7 @@ def run_finetune(cfg):
 
     batch_size = resolve_batch_size(
         ft_cfg.get("batch_size", 16), dataset, tuner.compute_losses, tuner.optimizer,
-        tuner.model, device, ft_cfg, logger, probe_unfreeze=probe_unfreeze,
+        tuner.model, device, ft_cfg, logger,
     )
 
     loader = DataLoader(

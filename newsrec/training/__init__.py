@@ -1,1 +1,1 @@
-"""Training subpackage: schedulers, trainers, HF uploader."""
+"""Training subpackage: trainers, checkpointing, batch finder, HF uploader."""

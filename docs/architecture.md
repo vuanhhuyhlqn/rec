@@ -28,7 +28,7 @@ news text (title + abstract, tokenised)
         ▼
 Module 0  PLMEncoder      DistilBERT (distilbert-base-uncased, 6 layers) + LoRA
         │                 → word embeddings [B, L, D_plm=768]
-        │                 (gradual layer unfreezing; also supports BERT)
+        │                 (LoRA-only; base frozen. also supports BERT)
         ▼
 Module 1  NewsEncoder     Fastformer(D_plm, 16 heads) + attention pool + Linear(D_plm→D)
         │                 → news vector  h_i  [B, D]        (D = model_dim, default 256)
@@ -80,7 +80,7 @@ rec/
 │   ├── models/               # the encoders + two-tower + pretrain wrapper
 │   ├── losses/               # infonce, pretrain_losses, paac_losses
 │   ├── eval/                 # metrics + impression evaluator
-│   ├── training/             # trainers, scheduler, checkpoint, hub uploader, batch_finder
+│   ├── training/             # trainers, checkpoint, hub uploader, batch_finder
 │   ├── utils/                # config, logging, seed, env
 │   └── scripts/              # PYTHON entry points (run_pretrain, etc.)
 └── tests/                    # pytest suite (~109 tests; offline-safe)
@@ -142,7 +142,7 @@ After `stack_collate` every key gains a leading batch dim `[B, ...]`.
 
 | File | Symbol | Contract |
 |---|---|---|
-| `plm_encoder.py` | `PLMEncoder` | PLM (DistilBERT/BERT) + LoRA. `forward(input_ids[B,L], attn[B,L]) → (last_hidden_state[B,L,D_plm], mask)`. `set_trainable_layers(n)` opens top-n layers' base weights (LoRA always trainable); `frozen_layers`, `num_trainable_parameters()`, `output_dim`. **Architecture-aware**: LoRA targets + layer-name marker auto-selected from `config.model_type` — BERT `["query","key","value","dense"]` / `encoder.layer.N`; DistilBERT `["q_lin","k_lin","v_lin","out_lin","lin1","lin2"]` / `transformer.layer.N`. `pretrained=False` + `small_config` builds a tiny random BERT for offline tests. |
+| `plm_encoder.py` | `PLMEncoder` | PLM (DistilBERT/BERT) + LoRA. `forward(input_ids[B,L], attn[B,L]) → (last_hidden_state[B,L,D_plm], mask)`. **LoRA-only**: the base backbone is frozen at construction (`set_trainable_layers(0)`) and only the LoRA adapters train; `set_trainable_layers(n)` can also open the top-n base layers but the trainers never call it (no gradual unfreeze). `frozen_layers`, `num_trainable_parameters()`, `output_dim`. **Architecture-aware**: LoRA targets + layer-name marker auto-selected from `config.model_type` — BERT `["query","key","value","dense"]` / `encoder.layer.N`; DistilBERT `["q_lin","k_lin","v_lin","out_lin","lin1","lin2"]` / `transformer.layer.N`. `pretrained=False` + `small_config` builds a tiny random BERT for offline tests. |
 | `fastformer.py` | `FastformerConfig`, `FastformerEncoder` | Vendored/adapted Fastformer. **Returns per-position states `[B,S,D]`** (not pooled). Uses `BertIntermediate/BertOutput/BertSelfOutput` from `transformers`. Additive mask `(1-mask)*-1e4`, learned position embeddings + LayerNorm + dropout. `hidden_size` must be divisible by `num_heads` (default 16: 768/16=48, 256/16=16). |
 | `attention_pooler.py` | `AdditiveAttentionPooling` | `forward(x[B,S,D], mask[B,S]) → (pooled[B,D], alpha[B,S])`. Masked-fill `-inf` then softmax + `nan_to_num` (all-pad rows → 0 vector). |
 | `news_encoder.py` | `NewsEncoder` | Module 1. `forward(word_emb[B,L,D_plm], mask[B,L]) → h_i[B,D]`. = Fastformer(D_plm) → pool → `Linear(D_plm→D)` (`Identity` if equal). `output_dim` = D. |
@@ -234,9 +234,8 @@ Two phases (mirrors representation caching):
 
 | File | Symbol | Role |
 |---|---|---|
-| `lora_schedule.py` | `LoRAUnfreezeScheduler(plm, schedule=[[epoch, n_layers], ...])` | `.step(epoch) → (changed, n)` calls `plm.set_trainable_layers(n)` only when `n` changes. `n` is clamped to the PLM layer count (so `[6,12]` → 6 on a 6-layer DistilBERT). |
 | `batch_finder.py` | `find_max_batch_size`, `search_largest_fit` | Auto batch-size finder. `search_largest_fit(can_fit, min, max)` is a pure, monotonic doubling + binary-refine search (unit-tested without a GPU). `find_max_batch_size(build_batch, probe_step, device, max_batch, safety)` probes a real fwd+bwd at growing batch sizes, catches `torch.cuda.OutOfMemoryError`, clears cache between trials, applies the `safety` margin (0.95). Returns `None` on non-CUDA (GPU-only concept). |
-| `finetuner.py` | `Finetuner` | Stage 2. `compute_losses(batch)` builds `{L_rec, L_sa?, L_cl?, L_reg?, total}`; `_encode_triplet` returns `(z_u, pos_vec, neg_vec, history_vecs[B,S,D], history_mask)`; `train_step` runs the forward under `_autocast()` (**bf16 AMP** on GPU when `cfg["amp"]`); `train(...)`, `evaluate(...)`, `load_pretrained(ckpt)`. tqdm progress bar per epoch; per-step losses logged at DEBUG (file-only). Optimiser = Adam over **all** params (gradual unfreeze needs no rebuild). |
+| `finetuner.py` | `Finetuner` | Stage 2. `compute_losses(batch)` builds `{L_rec, L_sa?, L_cl?, L_reg?, total}`; `_encode_triplet` returns `(z_u, pos_vec, neg_vec, history_vecs[B,S,D], history_mask)`; `train_step` runs the forward under `_autocast()` (**bf16 AMP** on GPU when `cfg["amp"]`); `train(...)`, `evaluate(...)`, `load_pretrained(ckpt)`. tqdm progress bar per epoch; per-step losses logged at DEBUG (file-only). Optimiser = Adam over the trainable params (LoRA adapters + encoders/heads); the PLM base stays frozen the whole run (LoRA-only). |
 | `pretrainer.py` | `Pretrainer(module, config, device, logger, checkpoint_manager)` | Stage 1. Joint weighted multi-task loop; same `_autocast()` bf16 path + tqdm + DEBUG step logs; saves per `save_every` with `metric=avg_loss` (`higher_is_better=False`). |
 | `checkpoint.py` | `save_checkpoint`, `load_backbone_weights`, `CheckpointManager` | A checkpoint dir = `model.pt` (NewsRecModel state) + `config.yaml` + `lora/` (peft adapters) + `tokenizer/` + `extra.pt`. `load_backbone_weights(model, dir_or_file, strict=False)` loads shared Modules 0/1/2. `CheckpointManager.save(model, tag, extra_state, metric, higher_is_better)` writes `{local_dir}/{tag}` + enqueues HF upload + `maybe_save_best → {local_dir}/best`. |
 | `hub_uploader.py` | `HubUploader(repo_id, token, private, enabled, logger, api)` | **Async** background-thread queue. `enabled` only if `repo_id` and a token (or injected `api`). Graceful fallback (logs, `enqueue→False`) when disabled. `enqueue(local_dir, path_in_repo)`, `close(wait=True)` flushes. Token resolved via `_resolve_token()` → `utils.env.get_hf_token`. |
@@ -269,9 +268,9 @@ Auto-batch keys (read by `resolve_batch_size`, not the trainer): `batch_size`
 | Module | What it does |
 |---|---|
 | `prepare_data.py` | Loads MIND (auto-downloads into `dataset/` if missing; `--no-download` to disable), prints stats + vocab sizes. |
-| `common.py` | Shared builders: `build_logger`; `resolve_device(cfg)` (`auto`→cuda/cpu, with cuda-unavailable fallback); `resolve_batch_size(...)` (returns int; if `batch_size=="auto"` probes the GPU via `find_max_batch_size` using **worst-case** batches — `dataset.heaviest_indices` longest histories **and** `probe_unfreeze` top-N layers unfrozen — then `×batch_safety`; CPU → `fallback_batch_size`); `build_checkpoint_manager` (async `HubUploader` + ckpt dir namespaced by `run_name`); `load_news_and_tokens` (loads train+dev with optional `max_*_impressions` slicing, auto-download via `ensure_mind_split`+`download_dir`, builds `NewsTokenTable`, `category_ids`, `ItemPopularity`). |
-| `run_pretrain.py` | `run_pretrain(cfg)` + `main`. Builds `PretrainDataset` + `PretrainModule` + `Pretrainer`; selects tasks from `pretrain.tasks`; auto-batch (no unfreeze, so `probe_unfreeze=0`). |
-| `run_finetune.py` | `run_finetune(cfg)` + `main`. Builds `FinetuneTripletDataset` + `Finetuner`; optional `LoRAUnfreezeScheduler` from `finetune.lora_schedule`; passes `probe_unfreeze = max(n in schedule)` to the batch finder (so the chosen batch is safe after layers unfreeze); loads `finetune.pretrained_ckpt` if set; evaluates on dev. |
+| `common.py` | Shared builders: `build_logger`; `resolve_device(cfg)` (`auto`→cuda/cpu, with cuda-unavailable fallback); `resolve_batch_size(...)` (returns int; if `batch_size=="auto"` probes the GPU via `find_max_batch_size` using **worst-case** batches — `dataset.heaviest_indices` longest histories — then `×batch_safety`; CPU → `fallback_batch_size`); `build_checkpoint_manager` (async `HubUploader` + ckpt dir namespaced by `run_name`); `load_news_and_tokens` (loads train+dev with optional `max_*_impressions` slicing, auto-download via `ensure_mind_split`+`download_dir`, builds `NewsTokenTable`, `category_ids`, `ItemPopularity`). |
+| `run_pretrain.py` | `run_pretrain(cfg)` + `main`. Builds `PretrainDataset` + `PretrainModule` + `Pretrainer`; selects tasks from `pretrain.tasks`; auto-batch supported via `batch_size: auto`. |
+| `run_finetune.py` | `run_finetune(cfg)` + `main`. Builds `FinetuneTripletDataset` + `Finetuner` (LoRA-only); loads `finetune.pretrained_ckpt` if set; resolves the batch size; evaluates on dev. |
 | `push_dataset.py` | Uploads MIND splits to a HF **dataset** repo (`train/`, `dev/` subfolders). |
 
 ### Config schema (composed via `_base_: ../base.yaml`)
@@ -293,7 +292,7 @@ pretrain: { tau, tasks, training: {...DEFAULT_PRETRAIN_CONFIG..., amp} }   # sta
 finetune: { pretrained_ckpt, negatives_per_pos, batch_size(auto), max_batch_size,
             batch_safety, fallback_batch_size, num_workers, amp,
             lambda1/2/3, sa_ratio, cl_x_percent(80), cl_*, lr, epochs,
-            eval_every, lora_schedule } # stage 2
+            eval_every } # stage 2 (LoRA-only; no unfreeze schedule)
 ```
 
 ---
@@ -367,20 +366,17 @@ finetune: { pretrained_ckpt, negatives_per_pos, batch_size(auto), max_batch_size
 - Checkpoints are namespaced `{checkpoint.dir}/{run_name}/{stage}`; **reusing a
   `run_name` overwrites** the previous run's checkpoints.
 - The MIND MRR is the competition variant (`Σ y/rank ÷ Σ y`), not first-hit RR.
-- `optimizer` is built over all params on purpose; frozen params simply receive
-  no gradient until the LoRA scheduler unfreezes them.
-- **Auto-batch must probe at peak memory.** A LoRA-only probe massively
-  under-estimates: when base weights are frozen, autograd discards the big FFN
-  activations; once unfrozen it must keep them (several GB). `run_finetune`
-  therefore probes at the schedule's max unfreeze (`probe_unfreeze`) and uses the
-  longest-history (`heaviest_indices`) batches. Don't bypass this.
+- `optimizer` is built over the trainable params (LoRA adapters + encoders/heads);
+  the PLM base weights are frozen for the whole run (LoRA-only) — they simply
+  receive no gradient.
+- **Auto-batch probe matches training memory.** Training is LoRA-only (base
+  frozen), so the batch-finder's probe sees the same memory profile as the real
+  run. It uses the longest-history (`heaviest_indices`) batches so the chosen
+  size is safe for every batch. No special unfreeze handling is needed.
 - On a **shared** GPU the finder can be unstable (co-tenant memory fluctuates → it
   may pick a tiny batch, or a too-large one). Prefer pinning `finetune.batch_size`.
 - **bf16 AMP**: `encode_news` zero-fills skipped rows with the *encoder output*
   dtype (not a hard-coded float) so it works under autocast. Keep that.
-- DistilBERT has **6 layers**; the default `lora_schedule` `[[0,0],[2,2],[4,6],[6,12]]`
-  was written for 12-layer BERT — `[4,6]` already unfreezes all 6 (the `[6,12]`
-  step is a no-op clamp). Use `[[0,0],[2,2],[4,4],[6,6]]` for a smoother ramp.
 - torch is pinned to the **cu128** wheel index in `pyproject.toml`; the default
   PyPI cu13 build fails on CUDA-12.8 drivers (`cuda.is_available()` False → silent
   CPU run → host OOM). Run `setup.sh` on fresh machines.

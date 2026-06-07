@@ -201,8 +201,9 @@ Key knobs (full schema in `architecture.md` §9):
 - `model.news_encoder.num_heads` / `model.user_encoder.num_heads` (default 16).
 - `finetune.{lambda1, lambda2, lambda3, cl_beta, cl_gamma, cl_tau, sa_ratio, cl_x_percent}`.
 - `finetune.{batch_size, max_batch_size, batch_safety, amp}` (see §5.1).
-- `finetune.lora_schedule`: list of `[epoch, num_top_PLM_layers_trainable]`
-  (clamped to the PLM layer count — DistilBERT has 6).
+- Training is **LoRA-only**: the DistilBERT base stays frozen and only the LoRA
+  adapters (+ the Fastformer encoders/heads) train. Tune capacity via
+  `model.plm.lora_r` / `lora_alpha`.
 
 Defaults (overridable): τ=0.1, mask ratio=0.15, **PAAC popular split x=80% /
 sa_ratio=0.8**, β=1.0, γ=0.5, λ1=λ2=0.1, λ3=1e-4, model_dim=256, **Fastformer 2
@@ -213,8 +214,7 @@ distilbert-base-uncased** (6 layers), bf16 AMP on, batch_size=auto.
 
 - `finetune.batch_size: auto` (default) probes the GPU for the largest batch
   that fits and applies `batch_safety` (0.95). It probes the **worst case** —
-  the longest histories *and* the schedule's maximum layer unfreeze — so the
-  chosen batch stays safe even after `lora_schedule` unfreezes layers mid-run.
+  the longest histories — so the chosen batch stays safe for every batch.
   Pin an integer to disable; on CPU it uses `fallback_batch_size` (8).
 - `max_batch_size` caps the search (default 256).
 - `amp: true` enables **bf16 mixed precision** on GPU (~1.5–2× faster, lower
@@ -270,7 +270,7 @@ Every run writes to console and a file:
 rec/logs/{stage}_{run_name}_{timestamp}.log
 ```
 The **console** shows a tqdm progress bar (total batches, it/s, ETA) plus epoch
-summaries, LoRA-unfreeze events, and dev metrics. The detailed **per-step loss
+summaries and dev metrics. The detailed **per-step loss
 breakdown** (`L_rec`, `L_sa`, `L_cl`, and each pre-train task) is written at
 DEBUG to the **file only**, so it never breaks the progress bar. Set
 `logging.level=DEBUG` to also show step lines on the console.
@@ -350,7 +350,7 @@ python -m pytest tests/test_smoke.py
 | Symptom | Likely cause / fix |
 |---|---|
 | Process **`Killed`** (no traceback), runs on CPU | torch can't see the GPU — usually the wrong CUDA build. Check `.venv/bin/python -c "import torch;print(torch.__version__, torch.cuda.is_available())"`. Reinstall the cu128 build (`uv pip install --reinstall torch --index-url https://download.pytorch.org/whl/cu128`) or run `setup.sh`. |
-| `torch.cuda.OutOfMemoryError` mid-epoch (after a few epochs) | Batch chosen too large once layers unfreeze. Ensure you're on the version that probes at max-unfreeze; lower `batch_safety`, pin a smaller `finetune.batch_size`, or reduce `data.max_history`. |
+| `torch.cuda.OutOfMemoryError` | Batch too large for the card. With `batch_size: auto` this is rare; if pinned, lower `finetune.batch_size`, lower `batch_safety`, or reduce `data.max_history`. (Pretrain configs pin `batch_size: 32` — set it to `auto` or a smaller int on small GPUs.) |
 | Auto batch picks `1` / wildly varying sizes | **Shared GPU** — a co-tenant's memory fluctuates during the probe. Pin `finetune.batch_size` to a verified value. |
 | Epoch ETA absurdly long (tqdm total == #triplets) | `batch_size` resolved to 1. See the two rows above; pin the batch. |
 | `IndexError: index out of range in self` during forward/eval | Sequence longer than Fastformer position capacity. Increase `model.max_title_len` / `model.max_history_len`, or lower `data.max_history`. |
@@ -359,7 +359,7 @@ python -m pytest tests/test_smoke.py
 | HF upload silently does nothing | `hub.push_to_hub` false or no token. Check the log for the device/token line. |
 | `peft` UserWarning about missing config when saving | Benign; LoRA adapters still save correctly. |
 | Pretrained weights don't seem to load | Confirm `finetune.pretrained_ckpt` points at a dir containing `model.pt`; the log prints `missing=/unexpected=` counts (should be ~0). |
-| Out of memory on GPU (up front) | Lower `finetune.batch_size` / `data.max_history` / `model.model_dim`, keep AMP on, or use fewer unfrozen layers in `finetune.lora_schedule`. |
+| Out of memory on GPU (up front) | Lower `finetune.batch_size` / `data.max_history` / `model.model_dim`, keep AMP on, or reduce `model.plm.lora_r`. |
 | Two scenarios overwrote each other's checkpoints | They shared a `run_name`. Give each run a unique `run_name`. |
 
 ---

@@ -8,8 +8,10 @@ Task 8 implements the **L_rec-only** training loop (BPR over in-impression
 triplets) together with:
 
 * periodic dev evaluation via :class:`~newsrec.eval.evaluator.ImpressionEvaluator`,
-* file + console logging of the per-step / per-epoch loss and dev metrics,
-* the :class:`~newsrec.training.lora_schedule.LoRAUnfreezeScheduler` hook.
+* file + console logging of the per-step / per-epoch loss and dev metrics.
+
+Training is **LoRA-only from the start**: the PLM base weights stay frozen for
+the whole run and only the LoRA adapters (plus the encoders/heads) are updated.
 
 :meth:`Finetuner.compute_losses` is written so Task 9 can extend it with the
 PAAC ``L_sa`` / ``L_cl`` terms without touching the training loop.
@@ -70,7 +72,6 @@ class Finetuner:
         config: Optional[dict] = None,
         device: str | torch.device = "cpu",
         logger=None,
-        scheduler=None,
         popularity=None,
         checkpoint_manager=None,
     ):
@@ -81,11 +82,10 @@ class Finetuner:
         self.device = torch.device(device)
         self.model.to(self.device)
         self.logger = logger
-        self.scheduler = scheduler
         self.popularity = popularity
         self.ckpt = checkpoint_manager
 
-        # Optimiser over ALL params so gradual unfreeze works without rebuild.
+        # Optimiser over all trainable params (LoRA adapters + encoders/heads).
         self.optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=self.cfg["lr"],
@@ -220,11 +220,6 @@ class Finetuner:
         last_metrics: Dict[str, float] = {}
 
         for epoch in range(epochs):
-            if self.scheduler is not None:
-                changed, n_layers = self.scheduler.step(epoch)
-                if changed:
-                    self._log(f"[epoch {epoch}] LoRA unfreeze -> top {n_layers} BERT layers")
-
             running = 0.0
             use_bar = tqdm is not None and self.cfg.get("progress", True)
             bar = tqdm(total=len(train_loader), desc=f"finetune e{epoch}",

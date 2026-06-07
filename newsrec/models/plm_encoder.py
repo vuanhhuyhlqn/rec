@@ -7,18 +7,19 @@ A pretrained language model (PLM) wrapped with LoRA adapters that turns news
 Module 1, pools these into a single news vector).
 
 Supports BERT- and DistilBERT-family encoders; the LoRA target modules and the
-layer-name marker used for gradual unfreezing are auto-detected from the model
-architecture (so ``bert-base-uncased`` and ``distilbert-base-uncased`` both work
-without manual wiring).
+layer-name marker are auto-detected from the model architecture (so
+``bert-base-uncased`` and ``distilbert-base-uncased`` both work without manual
+wiring).
 
 Key features
 ------------
-* LoRA (via ``peft``) on the attention / FFN projection matrices.  By default
-  the PLM backbone is frozen and only the LoRA adapters train.
-* :meth:`set_trainable_layers` implements **gradual unfreezing**: it makes the
-  *base* weights of the top-``n`` transformer layers trainable (LoRA adapters
-  always stay trainable).  ``n = 0`` → LoRA-only; ``n = num_layers`` → full
-  fine-tune.
+* LoRA (via ``peft``) on the attention / FFN projection matrices.  Training is
+  **LoRA-only**: the PLM backbone is frozen and only the LoRA adapters train.
+* :meth:`set_trainable_layers` is the low-level freeze primitive used at
+  construction to put the encoder in the LoRA-only state (``n = 0``: base frozen,
+  LoRA trainable).  It can also open the *base* weights of the top-``n``
+  transformer layers (``n = num_layers`` → full fine-tune), but the trainers no
+  longer change ``n`` during training.
 * A ``pretrained=False`` path builds a small randomly-initialised BERT from an
   explicit config — used by the unit tests so they run fast and offline.
 """
@@ -99,12 +100,12 @@ class PLMEncoder(nn.Module):
             )
             self.bert = get_peft_model(self.bert, lora_cfg)
 
-        # Start frozen-backbone (LoRA-only). Gradual unfreeze opens base layers.
+        # LoRA-only: freeze the base backbone, train only the LoRA adapters.
         self._frozen_layers = self.num_layers
         self.set_trainable_layers(0)
 
     # ------------------------------------------------------------------ #
-    # Gradual unfreezing                                                 #
+    # Layer freezing (LoRA-only by default)                              #
     # ------------------------------------------------------------------ #
     def _is_lora_param(self, name: str) -> bool:
         return "lora_" in name

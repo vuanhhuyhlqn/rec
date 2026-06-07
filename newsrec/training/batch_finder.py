@@ -11,8 +11,7 @@ device/config dependent. :func:`find_max_batch_size` probes a real
 forward+backward step (the backward pass is where activation memory peaks) at
 exponentially increasing batch sizes, then binary-refines between the largest
 size that fit and the first that OOMed, and finally applies a ``safety``
-multiplier for headroom (memory fragmentation + optimizer state that grows as
-the LoRA schedule unfreezes more BERT layers).
+multiplier for headroom (memory fragmentation + optimizer state).
 
 It is a no-op (returns ``None``) on non-CUDA devices: "max batch size" only has
 a well-defined, catchable meaning for GPU OOM. Host-RAM OOM on CPU is a hard

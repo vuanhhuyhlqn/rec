@@ -44,9 +44,3 @@ finetune:
   eval_every: 1
   max_eval_impressions: 5000
 
-  # Gradual LoRA unfreeze: [epoch, num_top_BERT_layers_trainable]
-  lora_schedule:
-    - [0, 0]
-    - [2, 2]
-    - [4, 6]
-    - [6, 12]

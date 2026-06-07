@@ -15,7 +15,7 @@ news text (title + abstract)
         │
         ▼
 Module 0:  DistilBERT (distilbert-base-uncased) + LoRA  ── word embeddings [B, L, D]
-        │                                        (gradual layer unfreezing)
+        │                                        (LoRA-only; base frozen)
         ▼
 Module 1:  Fastformer news encoder            ── news vector  h_i  [B, D]
         │
@@ -43,7 +43,7 @@ newsrec/
   losses/      infonce, pretrain_losses (AAP/MIP/MAP/SP/BSM), paac_losses
                (BPR / L_sa / L_cl)
   eval/        metrics (AUC/MRR/nDCG@5/@10), impression evaluator
-  training/    lora_schedule, finetuner, pretrainer, checkpoint, hub_uploader,
+  training/    finetuner, pretrainer, checkpoint, hub_uploader,
                batch_finder (auto batch size)
   utils/       config, logging, seed, env (dotenv + HF token)
   scripts/     prepare_data, run_pretrain, run_finetune, push_dataset, common
@@ -169,8 +169,8 @@ Several optimizations keep training fast and OOM-safe:
   items, not padded slots (~2× on short histories).
 * **Auto batch size** — set `finetune.batch_size: auto` (default) to probe the
   GPU for the largest batch that fits (no OOM). It probes the *worst-case*
-  state (longest histories **and** the schedule's maximum layer unfreeze) and
-  applies a `batch_safety` margin (0.95). Pin an integer to disable.
+  state (the longest histories) and applies a `batch_safety` margin (0.95). Pin
+  an integer to disable.
 * On a **shared** GPU prefer pinning the batch — co-tenant memory fluctuates and
   can make the finder under/over-shoot.
 
@@ -202,7 +202,7 @@ Every run writes to both the console and a timestamped file
 per-epoch progress (total batches, it/s, ETA) on the console; the detailed
 **per-step loss breakdown** (`L_rec`, `L_sa`, `L_cl`, and each pre-train task)
 is logged at DEBUG to the **file only**, so it doesn't break the progress bar.
-Epoch summaries, LoRA-unfreeze events, and dev metrics (AUC / MRR / nDCG@5 /
+Epoch summaries and dev metrics (AUC / MRR / nDCG@5 /
 nDCG@10) appear on both.
 
 ## HuggingFace checkpointing

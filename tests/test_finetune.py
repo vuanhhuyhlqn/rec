@@ -1,4 +1,4 @@
-"""Tests for Task 8: finetune dataset, BPR loss, LoRA scheduler, train loop."""
+"""Tests for Task 8: finetune dataset, BPR loss, and the train loop."""
 
 import torch
 from torch.utils.data import DataLoader
@@ -7,10 +7,8 @@ from newsrec.data.collate import stack_collate
 from newsrec.data.finetune_dataset import FinetuneTripletDataset
 from newsrec.data.news_tokens import NewsTokenTable
 from newsrec.losses.paac_losses import bpr_loss
-from newsrec.models.plm_encoder import PLMEncoder
 from newsrec.models.rec_model import build_rec_model
 from newsrec.training.finetuner import Finetuner
-from newsrec.training.lora_schedule import LoRAUnfreezeScheduler
 
 
 class _Impr:
@@ -94,26 +92,6 @@ def test_bpr_loss_positive_and_decreases():
     loss_good = bpr_loss(pos_high, neg_low)
     assert loss_bad.item() > 0 and loss_good.item() > 0
     assert loss_good.item() < loss_bad.item()
-
-
-# --------------------------------------------------------------------------- #
-# LoRA scheduler                                                              #
-# --------------------------------------------------------------------------- #
-def test_lora_scheduler_unfreezes_expected_layers():
-    plm = PLMEncoder(
-        pretrained=False, use_lora=True, lora_r=4,
-        small_config=dict(hidden_size=32, num_hidden_layers=6, num_attention_heads=4,
-                          intermediate_size=64, max_position_embeddings=32, vocab_size=100),
-    )
-    sched = LoRAUnfreezeScheduler(plm, schedule=[[0, 0], [2, 2], [4, 6]])
-    changed0, n0 = sched.step(0)
-    assert changed0 and n0 == 0 and plm.frozen_layers == 6
-    changed1, n1 = sched.step(1)
-    assert not changed1 and n1 == 0  # still LoRA-only
-    changed2, n2 = sched.step(2)
-    assert changed2 and n2 == 2 and plm.frozen_layers == 4
-    changed4, n4 = sched.step(5)
-    assert changed4 and n4 == 6 and plm.frozen_layers == 0
 
 
 # --------------------------------------------------------------------------- #

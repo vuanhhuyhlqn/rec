@@ -50,4 +50,4 @@ finetune:
   log_every: 5
   eval_every: 1
   max_eval_impressions: 50
-  lora_schedule: [[0, 0]]
+

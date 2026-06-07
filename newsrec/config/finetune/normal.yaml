@@ -40,10 +40,3 @@ finetune:
   eval_every: 1
   max_eval_impressions: 5000
 
-  # Gradual LoRA unfreeze: [epoch, num_top_PLM_layers_trainable]
-  # (clamped to the PLM layer count; DistilBERT has 6 layers.)
-  lora_schedule:
-    - [0, 0]
-    - [2, 2]
-    - [4, 6]
-    - [6, 12]
