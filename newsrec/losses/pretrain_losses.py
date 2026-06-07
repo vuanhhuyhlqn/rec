@@ -21,6 +21,7 @@ encoders + the learnable ``[MASK]`` token lives in
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Iterable, List
 
 import torch
@@ -65,10 +66,10 @@ def select_enabled_tasks(config) -> List[str]:
     """
     if config is None:
         return []
-    if isinstance(config, dict):
+    if isinstance(config, Mapping):
         enabled = []
         for name, spec in config.items():
-            if isinstance(spec, dict):
+            if isinstance(spec, Mapping):
                 if spec.get("enabled", True):
                     enabled.append(name)
             elif spec:
@@ -88,9 +89,9 @@ def task_weights(config, enabled: Iterable[str]) -> dict:
     weights = {}
     for name in enabled:
         w = 1.0
-        if isinstance(config, dict):
+        if isinstance(config, Mapping):
             spec = config.get(name)
-            if isinstance(spec, dict):
+            if isinstance(spec, Mapping):
                 w = float(spec.get("weight", 1.0))
         weights[name] = w
     return weights

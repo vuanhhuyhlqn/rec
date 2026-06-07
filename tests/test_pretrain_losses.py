@@ -78,6 +78,21 @@ def test_select_enabled_tasks_list_and_mapping():
     assert w["aap"] == 2.0 and w["bsm"] == 1.0
 
 
+def test_task_config_from_config_object():
+    # Regression: configs arrive as a `Config` (MutableMapping, NOT a dict), so
+    # weights/enabled flags must be read via isinstance(Mapping), not dict.
+    from newsrec.utils.config import Config
+    cfg = Config({
+        "aap": {"enabled": True, "weight": 1.0},
+        "mip": {"enabled": True, "weight": 0.3},
+        "map": {"enabled": False},
+    })
+    enabled = select_enabled_tasks(cfg)
+    assert enabled == ["aap", "mip"]  # map disabled
+    w = task_weights(cfg, enabled)
+    assert w["mip"] == 0.3 and w["aap"] == 1.0
+
+
 def test_select_unknown_task_raises():
     try:
         select_enabled_tasks(["bogus"])
