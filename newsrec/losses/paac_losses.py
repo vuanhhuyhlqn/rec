@@ -106,15 +106,26 @@ def augment_views(
     noise_std: float = 0.1,
     generator: torch.Generator | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Create two augmented views of ``h`` via feature dropout + Gaussian noise."""
+    """Create two augmented views of ``h`` via feature dropout + Gaussian noise.
+
+    ``generator`` (if given) seeds the randomness for reproducibility. Note that
+    ``*_like`` ops ignore a generator, so we draw explicitly with ``torch.rand``/
+    ``torch.randn`` to honour it.
+    """
 
     def _aug(x: torch.Tensor) -> torch.Tensor:
         out = x
         if dropout_p > 0:
-            mask = (torch.rand_like(out) > dropout_p).to(out.dtype)
+            rand = torch.rand(
+                x.shape, device=x.device, dtype=x.dtype, generator=generator
+            )
+            mask = (rand > dropout_p).to(out.dtype)
             out = out * mask / (1.0 - dropout_p)
         if noise_std > 0:
-            out = out + torch.randn_like(out) * noise_std
+            noise = torch.randn(
+                x.shape, device=x.device, dtype=x.dtype, generator=generator
+            )
+            out = out + noise * noise_std
         return out
 
     return _aug(h), _aug(h)
@@ -165,6 +176,7 @@ def reweighting_contrastive_loss(
     tau: float = 0.1,
     dropout_p: float = 0.1,
     noise_std: float = 0.1,
+    center: bool = True,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """
@@ -174,18 +186,33 @@ def reweighting_contrastive_loss(
     split into popular / unpopular groups by global popularity (top-x%).  A
     ``beta``-reweighted InfoNCE is computed with popular items as anchors and
     with unpopular items as anchors, combined by ``gamma``.
+
+    The item embeddings are strongly **anisotropic** (they share a dominant
+    direction, so any two items have cosine ~= 1). Cosine-based InfoNCE then
+    cannot tell the positive apart from the negatives and the loss is pinned at
+    ``log(N)`` with no gradient. ``center=True`` (default) removes the shared
+    component by subtracting the batch mean before normalising, which restores a
+    usable contrastive signal. The computation is done in float32 because the
+    normalise + logsumexp path is delicate under bf16 autocast.
     """
     n = item_vecs.shape[0]
     if n < 2:
         return torch.zeros((), device=item_vecs.device)
 
-    h1, h2 = augment_views(item_vecs, dropout_p, noise_std, generator)
-    h1 = torch.nn.functional.normalize(h1, dim=-1)
-    h2 = torch.nn.functional.normalize(h2, dim=-1)
-    sim = (h1 @ h2.t()) / tau  # [N, N]
+    # Disable autocast so the normalise + matmul + logsumexp run in float32 even
+    # when the caller is inside a bf16 autocast region.
+    with torch.autocast(device_type=item_vecs.device.type, enabled=False):
+        item_vecs = item_vecs.float()
+        if center:
+            item_vecs = item_vecs - item_vecs.mean(dim=0, keepdim=True)
 
-    pop_idx, unpop_idx = _group_indices_by_pop(pop_values, x_percent)
+        h1, h2 = augment_views(item_vecs, dropout_p, noise_std, generator)
+        h1 = torch.nn.functional.normalize(h1, dim=-1)
+        h2 = torch.nn.functional.normalize(h2, dim=-1)
+        sim = (h1 @ h2.t()) / tau  # [N, N]
 
-    l_pop = _anchor_group_loss(sim, pop_idx, pop_idx, unpop_idx, beta)
-    l_unpop = _anchor_group_loss(sim, unpop_idx, unpop_idx, pop_idx, beta)
-    return gamma * l_pop + (1.0 - gamma) * l_unpop
+        pop_idx, unpop_idx = _group_indices_by_pop(pop_values, x_percent)
+
+        l_pop = _anchor_group_loss(sim, pop_idx, pop_idx, unpop_idx, beta)
+        l_unpop = _anchor_group_loss(sim, unpop_idx, unpop_idx, pop_idx, beta)
+        return gamma * l_pop + (1.0 - gamma) * l_unpop

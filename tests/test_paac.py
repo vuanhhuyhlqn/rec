@@ -99,6 +99,51 @@ def test_l_cl_gamma_weighting():
     assert lo - 1e-4 <= mixed.item() <= hi + 1e-4
 
 
+def test_l_cl_centering_breaks_anisotropy_degeneracy():
+    """Anisotropic items pin L_cl at ~log(N) unless mean-centered."""
+    import math
+
+    torch.manual_seed(0)
+    N, D = 32, 16
+    # Strong shared direction => off-diagonal cosine ~= 1 (anisotropy).
+    base = torch.randn(D)
+    items = base.unsqueeze(0).repeat(N, 1) + 0.05 * torch.randn(N, D)
+    pop = torch.arange(N, dtype=torch.float)
+    lnN = math.log(N)
+
+    # No augmentation so the only difference is the centering.
+    raw = reweighting_contrastive_loss(
+        items, pop, x_percent=80.0, dropout_p=0.0, noise_std=0.0, center=False
+    )
+    centered = reweighting_contrastive_loss(
+        items, pop, x_percent=80.0, dropout_p=0.0, noise_std=0.0, center=True
+    )
+    # Without centering the loss sits at the no-information fixed point ~log(N);
+    # with centering the positive separates and the loss collapses toward 0.
+    assert raw.item() > 0.9 * lnN
+    assert centered.item() < 0.25 * lnN
+
+
+def test_l_cl_runs_under_bf16_autocast_on_cpu():
+    """The autocast-disable guard must not error and must stay finite."""
+    torch.manual_seed(0)
+    items = torch.randn(8, 16)
+    pop = torch.arange(8, dtype=torch.float)
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        loss = reweighting_contrastive_loss(items, pop, x_percent=50.0)
+    assert torch.isfinite(loss) and loss.dtype == torch.float32
+
+
+def test_augment_views_generator_is_reproducible():
+    """The generator arg must actually seed the augmentation (was a dead param)."""
+    h = torch.randn(6, 16)
+    g1 = torch.Generator().manual_seed(123)
+    g2 = torch.Generator().manual_seed(123)
+    a1, b1 = augment_views(h, dropout_p=0.2, noise_std=0.1, generator=g1)
+    a2, b2 = augment_views(h, dropout_p=0.2, noise_std=0.1, generator=g2)
+    assert torch.allclose(a1, a2) and torch.allclose(b1, b2)
+
+
 # --------------------------------------------------------------------------- #
 # Integration                                                                 #
 # --------------------------------------------------------------------------- #

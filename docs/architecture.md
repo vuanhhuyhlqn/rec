@@ -36,7 +36,7 @@ Module 1  NewsEncoder     Fastformer(D_plm, 16 heads) + attention pool + Linear(
 Module 2  UserEncoder     Fastformer(D, 16 heads) → states [B, S, D]
         │                 + AdditiveAttentionPooling → user vector z_u [B, D]
         ▼
-score(z_u, candidate h_i) = cosine similarity / temperature
+score(z_u, candidate h_i) = dot product (default; cosine optional) / temperature
 ```
 
 Key dimension convention: **D_plm = 768** (DistilBERT hidden, same as BERT)
@@ -67,14 +67,15 @@ rec/
 │   ├── _env.sh               #   resolves the project venv interpreter ($PY)
 │   ├── pretrain_<scenario>.sh    # 9 scenarios: pretrain + finetune end-to-end
 │   ├── run_all_scenarios.sh
-│   ├── finetune_baseline.sh
+│   ├── finetune_baseline.sh   # PAAC, no pretraining
+│   ├── finetune_normal.sh     # plain BPR, PAAC off (lambda1=lambda2=0)
 │   └── push_dataset.sh
 ├── newsrec/                  # the python package
 │   ├── config/               # YAML presets (see §8)
 │   │   ├── base.yaml
 │   │   ├── pretrain/{full,item_level,sequence_level,attribute,
 │   │   │             aap_only,mip_only,map_only,sp_only,bsm_only}.yaml
-│   │   ├── finetune/paac.yaml
+│   │   ├── finetune/{paac,normal}.yaml
 │   │   └── smoke/{pretrain,finetune}.yaml
 │   ├── data/                 # parsing, vocab, popularity, datasets, download
 │   ├── models/               # the encoders + two-tower + pretrain wrapper
@@ -83,7 +84,7 @@ rec/
 │   ├── training/             # trainers, checkpoint, hub uploader, batch_finder
 │   ├── utils/                # config, logging, seed, env
 │   └── scripts/              # PYTHON entry points (run_pretrain, etc.)
-└── tests/                    # pytest suite (~109 tests; offline-safe)
+└── tests/                    # pytest suite (~113 tests; offline-safe)
 ```
 
 > ⚠️ There are **two** `scripts` locations: top-level `rec/scripts/*.sh`
@@ -100,8 +101,8 @@ rec/
 | `vocab.py` | `Vocab`, `build_news_vocab`, `build_category_vocab`, `NewsTextEncoder` | `Vocab` has special tokens (PAD/UNK/MASK) at fixed ids; `.index()` falls back to UNK. `NewsTextEncoder` wraps a HF `AutoTokenizer` (loads lazily in `__init__`) → `encode`/`encode_batch` produce padded `input_ids`/`attention_mask`. |
 | `popularity.py` | `ItemPopularity`, `build_popularity` | `p(i)` from click frequency. `from_impressions(impressions, include_history=True, include_clicked_candidates=True)`. Methods: `count`, `prob`, `top_percent_split(items, x)` (batch-level positional indices), `user_pop_unpop_split(history, ratio)` (per-user, ordering constraint), `long_tail_summary()`. CSV fallback `from_csv`. |
 | `news_tokens.py` | `NewsTokenTable` | `{nid: {input_ids, attention_mask}}` + zero PAD entry. `.build(news, encoder, batch_size)`, `.get(nid)`, `.has(nid)`, `.max_len`. Datasets only need a mapping with `get` + `max_len`, so tests pass plain dicts. |
-| `finetune_dataset.py` | `FinetuneTripletDataset` | BPR triplets `(history, i_pos, j_neg)`, in-impression negatives; skips impressions without both a click and a non-click. Optional `popularity` adds per-position pop values. |
-| `pretrain_dataset.py` | `build_user_sequences`, `PretrainDataset` | Per-user longest-history sequences; emits masking / segment / BSM tensors. |
+| `finetune_dataset.py` | `FinetuneTripletDataset` | BPR triplets `(history, i_pos, j_neg)`, in-impression negatives; skips impressions without both a click and a non-click. Each entry stores the **non-clicked pool**, not a fixed negative: the negative is drawn in `__getitem__` from `random.Random((seed,epoch,index))` so it is reproducible, worker-safe, and **reshuffled every epoch** (`set_epoch`; `resample_negatives=True` by default). Optional `popularity` adds per-position pop values. `heaviest_indices(k)` → longest-history rows for the batch finder. |
+| `pretrain_dataset.py` | `build_user_sequences`, `PretrainDataset` | Per-user longest-history sequences; emits masking / segment / BSM tensors. MIP masking and the SP segment are drawn from `random.Random((seed,epoch,index))` (via `set_epoch` + `_rng_for`) so they are reproducible, worker-safe, and **reshuffled every epoch**; BSM is a deterministic temporal split. `heaviest_indices(k)` for the batch finder. |
 | `collate.py` | `stack_collate` | Per-key `torch.stack` (all samples are fixed-shape). |
 | `download.py` | `ensure_mind_split` | Returns local dir if `news.tsv` present, else `snapshot_download`s `{subfolder}/*` from a HF dataset repo **into a project-local `download_dir` (default `dataset/`)** via `local_dir=`, returning `{download_dir}/{subfolder}`. Reuses an existing `dataset/{subfolder}` if already downloaded. Not the global `~/.cache/huggingface/hub`. |
 
@@ -142,22 +143,22 @@ After `stack_collate` every key gains a leading batch dim `[B, ...]`.
 
 | File | Symbol | Contract |
 |---|---|---|
-| `plm_encoder.py` | `PLMEncoder` | PLM (DistilBERT/BERT) + LoRA. `forward(input_ids[B,L], attn[B,L]) → (last_hidden_state[B,L,D_plm], mask)`. **LoRA-only**: the base backbone is frozen at construction (`set_trainable_layers(0)`) and only the LoRA adapters train; `set_trainable_layers(n)` can also open the top-n base layers but the trainers never call it (no gradual unfreeze). `frozen_layers`, `num_trainable_parameters()`, `output_dim`. **Architecture-aware**: LoRA targets + layer-name marker auto-selected from `config.model_type` — BERT `["query","key","value","dense"]` / `encoder.layer.N`; DistilBERT `["q_lin","k_lin","v_lin","out_lin","lin1","lin2"]` / `transformer.layer.N`. `pretrained=False` + `small_config` builds a tiny random BERT for offline tests. |
+| `plm_encoder.py` | `PLMEncoder` | PLM (DistilBERT/BERT) + LoRA. `forward(input_ids[B,L], attn[B,L]) → (last_hidden_state[B,L,D_plm], mask)`. **LoRA-only**: the base backbone is frozen at construction (`set_trainable_layers(0)`) and only the LoRA adapters train; `set_trainable_layers(n)` can also open the top-n base layers but the trainers never call it (no gradual unfreeze). `frozen_layers`, `num_trainable_parameters()`, `output_dim`. **Architecture-aware**: LoRA targets + layer-name marker auto-selected from `config.model_type` — BERT `["query","key","value","dense"]` / `encoder.layer.N`; DistilBERT `["q_lin","k_lin","v_lin","out_lin","lin1","lin2"]` / `transformer.layer.N`. `pretrained=False` + `small_config` builds a tiny random BERT for offline tests. Optional `gradient_checkpointing=True` recomputes PLM activations in backward (memory↓, ~20–30% slower) and registers `enable_input_require_grads` so checkpointing tracks grads through the frozen base to the LoRA adapters. |
 | `fastformer.py` | `FastformerConfig`, `FastformerEncoder` | Vendored/adapted Fastformer. **Returns per-position states `[B,S,D]`** (not pooled). Uses `BertIntermediate/BertOutput/BertSelfOutput` from `transformers`. Additive mask `(1-mask)*-1e4`, learned position embeddings + LayerNorm + dropout. `hidden_size` must be divisible by `num_heads` (default 16: 768/16=48, 256/16=16). |
 | `attention_pooler.py` | `AdditiveAttentionPooling` | `forward(x[B,S,D], mask[B,S]) → (pooled[B,D], alpha[B,S])`. Masked-fill `-inf` then softmax + `nan_to_num` (all-pad rows → 0 vector). |
 | `news_encoder.py` | `NewsEncoder` | Module 1. `forward(word_emb[B,L,D_plm], mask[B,L]) → h_i[B,D]`. = Fastformer(D_plm) → pool → `Linear(D_plm→D)` (`Identity` if equal). `output_dim` = D. |
 | `user_encoder.py` | `UserEncoder` | Module 2. `encode_sequence(vecs[B,S,D], mask) → [B,S,D]`; `pool(states, mask) → [B,D]`; `forward(...) → (sequence, z_u)`. The pooler is reused as `self.pooler`. |
-| `rec_model.py` | `NewsRecModel`, `build_rec_model(config)` | Two-tower. `encode_news(ids[...,L], attn) → [...,D]` — flattens leading dims and **skips padded rows** (runs the PLM only on rows with ≥1 real token; pad rows → zeros; dtype matches encoder output so it is autocast/bf16-safe), then reshapes back. `encode_user(...)`, `score(...)` (cosine/dot ÷ temperature), `model_dim`. |
+| `rec_model.py` | `NewsRecModel`, `build_rec_model(config)` | Two-tower. `encode_news(ids[...,L], attn) → [...,D]` — flattens leading dims and **skips padded rows** (runs the PLM only on rows with ≥1 real token; pad rows → zeros; dtype matches encoder output so it is autocast/bf16-safe), then reshapes back. `encode_user(...)`, `score(...)` (**dot product** by default, or cosine; ÷ temperature), `model_dim`. |
 | `pretrain_model.py` | `PretrainModule` | Wraps a `NewsRecModel` + adds `category_embeddings: nn.Embedding(C, D)` and `mask_token: nn.Parameter(D)`. `compute_losses(batch) → {task: loss, ..., "total": ...}`. |
 
 ### `build_rec_model(config)` config keys (merged over `DEFAULT_MODEL_CONFIG`)
 ```
 plm: {model_name, pretrained, use_lora, lora_r, lora_alpha, lora_dropout,
-      lora_target_modules?, small_config?}
+      lora_target_modules?, small_config?, gradient_checkpointing}
 model_dim: 256
 news_encoder: {num_layers, num_heads, dropout}
 user_encoder: {num_layers, num_heads, dropout}
-score: {type: cosine|dot, temperature}
+score: {type: dot|cosine, temperature}      # default dot
 max_title_len  (→ news Fastformer max position embeddings)
 max_history_len(→ user Fastformer max position embeddings)
 ```
@@ -223,8 +224,9 @@ Two phases (mirrors representation caching):
 1. `encode_news_table({nid: {input_ids, attention_mask}}, batch_size) → {nid: vec}`
    — runs PLM+NewsEncoder once over the catalogue.
 2. `evaluate(impressions, news_vectors, max_history, batch_size,
-   max_impressions, metrics)` — mini-batches the **user encoder + cosine
-   scoring** using cached vectors, ranks within each impression, returns
+   max_impressions, metrics)` — mini-batches the **user encoder + model
+   scoring** (dot product by default) using cached vectors, ranks within each
+   impression, returns
    averaged metrics. The scoring path is decoupled from BERT so tests can inject
    arbitrary `news_vectors`.
 
@@ -235,8 +237,8 @@ Two phases (mirrors representation caching):
 | File | Symbol | Role |
 |---|---|---|
 | `batch_finder.py` | `find_max_batch_size`, `search_largest_fit` | Auto batch-size finder. `search_largest_fit(can_fit, min, max)` is a pure, monotonic doubling + binary-refine search (unit-tested without a GPU). `find_max_batch_size(build_batch, probe_step, device, max_batch, safety)` probes a real fwd+bwd at growing batch sizes, catches `torch.cuda.OutOfMemoryError`, clears cache between trials, applies the `safety` margin (0.95). Returns `None` on non-CUDA (GPU-only concept). |
-| `finetuner.py` | `Finetuner` | Stage 2. `compute_losses(batch)` builds `{L_rec, L_sa?, L_cl?, L_reg?, total}`; `_encode_triplet` returns `(z_u, pos_vec, neg_vec, history_vecs[B,S,D], history_mask)`; `train_step` runs the forward under `_autocast()` (**bf16 AMP** on GPU when `cfg["amp"]`); `train(...)`, `evaluate(...)`, `load_pretrained(ckpt)`. tqdm progress bar per epoch; per-step losses logged at DEBUG (file-only). Optimiser = Adam over the trainable params (LoRA adapters + encoders/heads); the PLM base stays frozen the whole run (LoRA-only). |
-| `pretrainer.py` | `Pretrainer(module, config, device, logger, checkpoint_manager)` | Stage 1. Joint weighted multi-task loop; same `_autocast()` bf16 path + tqdm + DEBUG step logs; saves per `save_every` with `metric=avg_loss` (`higher_is_better=False`). |
+| `finetuner.py` | `Finetuner` | Stage 2. `compute_losses(batch)` builds `{L_rec, L_sa?, L_cl?, L_reg?, total}`; `_encode_triplet` returns `(z_u, pos_vec, neg_vec, history_vecs[B,S,D], history_mask)`; `train_step` runs the forward under `_autocast()` (**bf16 AMP** on GPU when `cfg["amp"]`); `train(...)`, `evaluate(...)`, `load_pretrained(ckpt)`. Calls `dataset.set_epoch(epoch)` each epoch (reshuffles the per-sample negative). tqdm progress bar per epoch; per-step losses logged at DEBUG (file-only). Optimiser = Adam over the trainable params (LoRA adapters + encoders/heads); the PLM base stays frozen the whole run (LoRA-only). |
+| `pretrainer.py` | `Pretrainer(module, config, device, logger, checkpoint_manager)` | Stage 1. Joint weighted multi-task loop; calls `dataset.set_epoch(epoch)` each epoch (reshuffles MIP/SP masks); same `_autocast()` bf16 path + tqdm + DEBUG step logs; saves per `save_every` with `metric=avg_loss` (`higher_is_better=False`). |
 | `checkpoint.py` | `save_checkpoint`, `load_backbone_weights`, `CheckpointManager` | A checkpoint dir = `model.pt` (NewsRecModel state) + `config.yaml` + `lora/` (peft adapters) + `tokenizer/` + `extra.pt`. `load_backbone_weights(model, dir_or_file, strict=False)` loads shared Modules 0/1/2. `CheckpointManager.save(model, tag, extra_state, metric, higher_is_better)` writes `{local_dir}/{tag}` + enqueues HF upload + `maybe_save_best → {local_dir}/best`. |
 | `hub_uploader.py` | `HubUploader(repo_id, token, private, enabled, logger, api)` | **Async** background-thread queue. `enabled` only if `repo_id` and a token (or injected `api`). Graceful fallback (logs, `enqueue→False`) when disabled. `enqueue(local_dir, path_in_repo)`, `close(wait=True)` flushes. Token resolved via `_resolve_token()` → `utils.env.get_hf_token`. |
 
@@ -283,14 +285,15 @@ data:
   hf_dataset_repo / auto_download / download_dir / train_subfolder / dev_subfolder
   max_title_len / max_history / min_seq_len / mask_prob
   max_train_impressions / max_dev_impressions   # optional slicing (smoke)
-model: { plm:{model_name: distilbert-base-uncased, ...}, model_dim, 
-         news_encoder:{num_heads:16,...}, user_encoder:{num_heads:16,...}, score, ... }
+model: { plm:{model_name: distilbert-base-uncased, gradient_checkpointing, ...}, model_dim,
+         news_encoder:{num_heads:16,...}, user_encoder:{num_heads:16,...},
+         score:{type: dot, temperature}, ... }
 logging: { log_dir, level }
 checkpoint: { dir }            # final path = {dir}/{run_name}/{stage}
 hub: { push_to_hub, hub_repo_id, hub_private }
 pretrain: { tau, tasks, training: {...DEFAULT_PRETRAIN_CONFIG..., amp} }   # stage 1
-finetune: { pretrained_ckpt, negatives_per_pos, batch_size(auto), max_batch_size,
-            batch_safety, fallback_batch_size, num_workers, amp,
+finetune: { pretrained_ckpt, negatives_per_pos, resample_negatives, batch_size(auto),
+            max_batch_size, batch_safety, fallback_batch_size, num_workers, amp,
             lambda1/2/3, sa_ratio, cl_x_percent(80), cl_*, lr, epochs,
             eval_every } # stage 2 (LoRA-only; no unfreeze schedule)
 ```
@@ -333,7 +336,7 @@ finetune: { pretrained_ckpt, negatives_per_pos, batch_size(auto), max_batch_size
   and the CPU no-op of `find_max_batch_size`.
 - HF uploads are tested with an injected fake API (`_FakeApi`), never hitting
   the network.
-- Run: `cd rec && python -m pytest` (≈109 tests).
+- Run: `cd rec && python -m pytest` (≈113 tests).
 - ⚠️ Known test-isolation quirk: `run_finetune`/`run_pretrain` call
   `load_dotenv(".env")`, which leaks `HUGGINGFACE_TOKEN` into the process env.
   If `test_smoke` runs before the hub no-token test, that test can see the token.
@@ -351,8 +354,10 @@ finetune: { pretrained_ckpt, negatives_per_pos, batch_size(auto), max_batch_size
 - **Swap the PLM**: set `model.plm.model_name`. LoRA targets + layer markers are
   auto-detected for BERT and DistilBERT (`_default_lora_targets` /
   `_LAYER_MARKERS` in `plm_encoder.py`); add a branch there for other families.
-- **Change scoring**: `model.score.type` = `cosine` or `dot`; extend
-  `NewsRecModel.score` for new variants.
+- **Change scoring**: `model.score.type` = `dot` (default) or `cosine`; extend
+  `NewsRecModel.score` for new variants. Dot is the default because the news/user
+  vectors are anisotropic (occupy a narrow cone), so cosine collapses all scores
+  toward ~1 and starves BPR of gradient; dot preserves magnitude.
 - **New metric**: add to `eval/metrics.py::METRIC_FNS`.
 
 ---
@@ -369,6 +374,20 @@ finetune: { pretrained_ckpt, negatives_per_pos, batch_size(auto), max_batch_size
 - `optimizer` is built over the trainable params (LoRA adapters + encoders/heads);
   the PLM base weights are frozen for the whole run (LoRA-only) — they simply
   receive no gradient.
+- **Scoring is dot product**, not cosine. The news/user vectors are anisotropic
+  (≈98% a shared direction), so cosine scores all sit near ~1 and the BPR loss
+  stays pinned at `ln 2` (no gradient). Dot product preserves magnitude and
+  trains. Watch `L_rec`: it should drop below `0.693` within the first epoch.
+- **Gradient checkpointing** (`model.plm.gradient_checkpointing: true`) recomputes
+  PLM activations in backward so the batch-finder can pick a much larger batch
+  (more in-batch negatives) at ~20–30% extra step cost. It needs
+  `enable_input_require_grads` (set automatically) for the frozen LoRA-only base.
+- **Per-epoch resampling**: both datasets reshuffle their stochastic content
+  every epoch via `set_epoch` (finetune negative; pretrain MIP/SP masks), seeded
+  by `(seed, epoch, index)` — reproducible and DataLoader-worker-safe. The
+  trainers call `set_epoch` automatically.
+- **Task weights/enabled** flags are read with `isinstance(..., Mapping)` (not
+  `dict`) because configs arrive as `Config` (a `MutableMapping`, not a `dict`).
 - **Auto-batch probe matches training memory.** Training is LoRA-only (base
   frozen), so the batch-finder's probe sees the same memory profile as the real
   run. It uses the longest-history (`heaviest_indices`) batches so the chosen

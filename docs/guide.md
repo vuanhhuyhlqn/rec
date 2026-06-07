@@ -152,8 +152,14 @@ bash scripts/pretrain_full.sh device=cuda pretrain.training.epochs=20 finetune.e
 Other runners:
 ```bash
 bash scripts/finetune_baseline.sh device=cuda     # PAAC, no pre-training (reference)
+bash scripts/finetune_normal.sh device=cuda       # plain BPR, PAAC off (lambda1=lambda2=0)
 bash scripts/run_all_scenarios.sh device=cuda     # every scenario sequentially
 ```
+
+`finetune_normal.sh` (config `finetune/normal.yaml`) is the non-debiased
+reference: it trains `L_rec(BPR) + L2` with the PAAC alignment/contrast terms
+disabled. PAAC adds no model parameters, so its checkpoints are interchangeable
+with the PAAC ones.
 
 Each scenario's checkpoints are namespaced by `run_name`
 (`checkpoints/pretrain_<scenario>/...` and `checkpoints/finetune_<scenario>/...`),
@@ -197,18 +203,25 @@ Precedence (low → high): `_base_` files → current file → `overrides` dict 
 Key knobs (full schema in `architecture.md` §9):
 - `device`: `auto` (default; cuda if available else cpu), `cuda`, or `cpu`.
 - `data.max_title_len`, `data.max_history`, `data.mask_prob`.
-- `model.model_dim`, `model.plm.{model_name, lora_r, lora_alpha}`, `model.score.temperature`.
+- `model.model_dim`, `model.plm.{model_name, lora_r, lora_alpha}`, `model.score.{type, temperature}`.
+- `model.plm.gradient_checkpointing` (default true) — recompute PLM activations
+  in backward to free memory for a larger batch (~20–30% slower/step).
 - `model.news_encoder.num_heads` / `model.user_encoder.num_heads` (default 16).
 - `finetune.{lambda1, lambda2, lambda3, cl_beta, cl_gamma, cl_tau, sa_ratio, cl_x_percent}`.
-- `finetune.{batch_size, max_batch_size, batch_safety, amp}` (see §5.1).
+- `finetune.{batch_size, max_batch_size, batch_safety, amp, resample_negatives}` (see §5.1).
 - Training is **LoRA-only**: the DistilBERT base stays frozen and only the LoRA
   adapters (+ the Fastformer encoders/heads) train. Tune capacity via
   `model.plm.lora_r` / `lora_alpha`.
 
+Scoring is the **dot product** (`model.score.type: dot`) — the
+recommendation score is `z_uᵀh_i`. Cosine is available (`type: cosine`) but
+collapses under representation anisotropy and is not recommended.
+
 Defaults (overridable): τ=0.1, mask ratio=0.15, **PAAC popular split x=80% /
 sa_ratio=0.8**, β=1.0, γ=0.5, λ1=λ2=0.1, λ3=1e-4, model_dim=256, **Fastformer 2
 layers × 16 heads**, history=50, title+abstract tokens=64, **PLM =
-distilbert-base-uncased** (6 layers), bf16 AMP on, batch_size=auto.
+distilbert-base-uncased** (6 layers, LoRA-only), **dot-product scoring**, bf16
+AMP on, gradient checkpointing on, batch_size=auto.
 
 ### 5.1 Auto batch size & mixed precision
 
@@ -219,8 +232,27 @@ distilbert-base-uncased** (6 layers), bf16 AMP on, batch_size=auto.
 - `max_batch_size` caps the search (default 256).
 - `amp: true` enables **bf16 mixed precision** on GPU (~1.5–2× faster, lower
   memory; no-op on CPU).
+- `model.plm.gradient_checkpointing: true` (default) recomputes the PLM's
+  activations in backward instead of storing them, freeing memory so the finder
+  picks a much larger batch (more in-batch negatives). ~20–30% slower per step;
+  set false on large GPUs if you prefer speed.
 - ⚠️ On a **shared** GPU the finder can be unstable (a co-tenant's memory use
   fluctuates) — prefer pinning `finetune.batch_size` to a value you've verified.
+
+### 5.2 Per-epoch shuffling
+
+Each epoch reshuffles both the batch order (`shuffle=True`) and the stochastic
+per-sample content:
+
+- **Fine-tune**: the negative is resampled from the impression's non-clicked
+  pool (`finetune.resample_negatives: true`, default).
+- **Pre-train**: the MIP masking and SP segment are re-drawn (BSM is a fixed
+  temporal split).
+
+Both are deterministic functions of `(seed, epoch, index)` — reproducible across
+runs and safe with multiple DataLoader workers. The trainers call the dataset's
+`set_epoch(epoch)` automatically; set `finetune.resample_negatives: false` to
+freeze negatives across epochs.
 
 ---
 
@@ -305,7 +337,7 @@ print(metrics)  # {'auc':..., 'mrr':..., 'ndcg@5':..., 'ndcg@10':...}
 
 ```bash
 cd rec
-python -m pytest                      # full suite (~109 tests, ~35s)
+python -m pytest                      # full suite (~113 tests, ~35s)
 python -m pytest tests/test_smoke.py  # end-to-end tiny pipeline only
 python -m pytest -k paac              # filter by name
 ```

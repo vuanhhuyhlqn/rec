@@ -23,7 +23,7 @@ Module 1:  Fastformer news encoder            ── news vector  h_i  [B, D]
 Module 2:  Fastformer user encoder            ── states [B, S, D]
         │  + additive attention pooler         ── user vector z_u [B, D]
         ▼
-score(z_u, candidate h_i) = cosine similarity
+score(z_u, candidate h_i) = dot product
 ```
 
 The same Modules 0/1/2 are shared between the pre-training and fine-tuning
@@ -127,8 +127,14 @@ fine-tunes from the resulting checkpoint:
 bash scripts/pretrain_full.sh                 # one scenario (pretrain + finetune)
 bash scripts/pretrain_full.sh device=cuda     # overrides forwarded to both stages
 bash scripts/finetune_baseline.sh             # PAAC with no pre-training (baseline)
+bash scripts/finetune_normal.sh               # plain BPR, PAAC losses off (λ1=λ2=0)
 bash scripts/run_all_scenarios.sh device=cuda # every scenario sequentially
 ```
+
+`finetune_normal.sh` (config `finetune/normal.yaml`) trains the plain
+recommender — `L_rec(BPR) + L2`, with the PAAC alignment/contrast terms switched
+off — as the non-debiased reference. PAAC adds no model parameters, so its
+checkpoints are interchangeable with the PAAC ones.
 
 Checkpoints are namespaced by `run_name`, e.g.
 `checkpoints/pretrain_item_level/pretrain/best`, so scenarios never overwrite
@@ -167,12 +173,21 @@ Several optimizations keep training fast and OOM-safe:
   memory.
 * **Padding-skip encoding** — the news encoder runs BERT only on real history
   items, not padded slots (~2× on short histories).
+* **Gradient checkpointing** (`model.plm.gradient_checkpointing: true`, default
+  on) — recomputes the PLM's activations in the backward pass instead of storing
+  them, which frees memory so the batch-finder can pick a much larger batch
+  (more in-batch negatives). ~20–30% slower per step; set false to disable.
 * **Auto batch size** — set `finetune.batch_size: auto` (default) to probe the
   GPU for the largest batch that fits (no OOM). It probes the *worst-case*
   state (the longest histories) and applies a `batch_safety` margin (0.95). Pin
   an integer to disable.
 * On a **shared** GPU prefer pinning the batch — co-tenant memory fluctuates and
   can make the finder under/over-shoot.
+
+Each epoch reshuffles both the batch order and the stochastic per-sample content
+— the fine-tune negative (resampled from the impression's non-clicked pool) and
+the pre-train MIP/SP masks — deterministically from `(seed, epoch, index)` so it
+is reproducible and DataLoader-worker-safe.
 
 ```bash
 python -m newsrec.scripts.run_finetune --config newsrec/config/finetune/paac.yaml \
@@ -253,9 +268,10 @@ python -m pytest tests/test_smoke.py   # end-to-end smoke test only
 
 | Component | Value |
 |---|---|
-| PLM | distilbert-base-uncased + LoRA (r=8, α=16) |
+| PLM | distilbert-base-uncased + LoRA (r=8, α=16), LoRA-only |
 | Model dim | 256 |
 | Fastformer | 2 layers, 16 heads |
+| Scoring | dot product (`score.type: dot`; `cosine` also available) |
 | History length | 50 (use 30 for faster/lighter runs) |
 | Title+abstract tokens | 64 |
 | InfoNCE temperature τ | 0.1 |
@@ -264,6 +280,7 @@ python -m pytest tests/test_smoke.py   # end-to-end smoke test only
 | PAAC β / γ | 1.0 / 0.5 |
 | λ1 / λ2 / λ3 | 0.1 / 0.1 / 1e-4 |
 | Mixed precision | bf16 (`amp: true`, GPU) |
+| Gradient checkpointing | on (`model.plm.gradient_checkpointing: true`) |
 | Batch size | `auto` (probed) + 0.95 safety |
 | Device | `auto` (cuda if available) |
 
