@@ -66,6 +66,12 @@ class Pretrainer:
         if self.logger:
             self.logger.info(msg)
 
+    def _log_step(self, msg: str) -> None:
+        # Per-step lines go to the log file only (DEBUG) so they don't break the
+        # console tqdm progress bar.
+        if self.logger:
+            self.logger.debug(msg)
+
     # ------------------------------------------------------------------ #
     def train_step(self, batch) -> Dict[str, float]:
         self.module.train()
@@ -96,7 +102,7 @@ class Pretrainer:
                     bar.set_postfix(loss=f"{step_losses['total']:.4f}",
                                     avg=f"{running / (i + 1):.4f}")
                 if (i + 1) % self.cfg["log_every"] == 0:
-                    self._log(format_metrics(step_losses, prefix=f"[pretrain e{epoch} s{i + 1}/{len(train_loader)}]"))
+                    self._log_step(format_metrics(step_losses, prefix=f"[pretrain e{epoch} s{i + 1}/{len(train_loader)}]"))
             if bar is not None:
                 bar.close()
 

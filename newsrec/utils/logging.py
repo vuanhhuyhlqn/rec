@@ -52,7 +52,12 @@ def setup_logger(
         os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
 
     logger = logging.getLogger(name)
-    logger.setLevel(level)
+    # The logger itself passes everything through; handlers decide what to emit.
+    # Per-step training lines are logged at DEBUG so they go to the file only
+    # (keeping the console tqdm progress bar intact), while epoch/eval summaries
+    # are logged at INFO and appear on both console and file.
+    console_level = logging.getLevelName(level) if isinstance(level, str) else level
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
     # Remove pre-existing handlers so repeated calls don't duplicate output.
@@ -64,11 +69,13 @@ def setup_logger(
 
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.DEBUG)            # file captures everything
     logger.addHandler(file_handler)
 
     if to_console:
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(formatter)
+        stream_handler.setLevel(console_level)      # console: INFO+ only
         logger.addHandler(stream_handler)
 
     # Expose path for downstream code / tests.
