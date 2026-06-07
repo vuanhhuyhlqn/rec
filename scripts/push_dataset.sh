@@ -9,6 +9,7 @@
 #   bash scripts/push_dataset.sh --include-embeddings
 set -euo pipefail
 cd "$(dirname "$0")/.."          # -> rec/
+source "$(dirname "$0")/_env.sh"
 
-python -m newsrec.scripts.push_dataset \
+$PY -m newsrec.scripts.push_dataset \
     --train dataset/train --dev dataset/dev "$@"

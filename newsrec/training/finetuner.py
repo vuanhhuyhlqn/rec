@@ -20,6 +20,11 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 import torch
+
+try:  # progress bars are optional; degrade gracefully if tqdm is absent
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover
+    tqdm = None
 from torch.utils.data import DataLoader
 
 from newsrec.eval.evaluator import ImpressionEvaluator
@@ -38,6 +43,7 @@ DEFAULT_FINETUNE_CONFIG = {
     "grad_clip": 1.0,
     "epochs": 1,
     "log_every": 10,
+    "progress": True,
     "eval_every": 1,
     "max_eval_impressions": 2000,
     "max_history": 50,
@@ -205,11 +211,20 @@ class Finetuner:
                     self._log(f"[epoch {epoch}] LoRA unfreeze -> top {n_layers} BERT layers")
 
             running = 0.0
+            use_bar = tqdm is not None and self.cfg.get("progress", True)
+            bar = tqdm(total=len(train_loader), desc=f"finetune e{epoch}",
+                       leave=False, dynamic_ncols=True) if use_bar else None
             for i, batch in enumerate(train_loader):
                 step_losses = self.train_step(batch)
                 running += step_losses["total"]
+                if bar is not None:
+                    bar.update(1)
+                    bar.set_postfix(loss=f"{step_losses['total']:.4f}",
+                                    avg=f"{running / (i + 1):.4f}")
                 if (i + 1) % self.cfg["log_every"] == 0:
-                    self._log(format_metrics(step_losses, prefix=f"[epoch {epoch} step {i + 1}]"))
+                    self._log(format_metrics(step_losses, prefix=f"[epoch {epoch} step {i + 1}/{len(train_loader)}]"))
+            if bar is not None:
+                bar.close()
 
             avg = running / max(1, len(train_loader))
             self._log(f"[epoch {epoch}] avg_total_loss={avg:.4f}")

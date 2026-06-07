@@ -18,6 +18,11 @@ from typing import Dict, Optional
 import torch
 from torch.utils.data import DataLoader
 
+try:  # progress bars are optional; degrade gracefully if tqdm is absent
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover
+    tqdm = None
+
 from newsrec.utils.logging import format_metrics
 
 
@@ -27,6 +32,7 @@ DEFAULT_PRETRAIN_CONFIG = {
     "grad_clip": 1.0,
     "epochs": 1,
     "log_every": 10,
+    "progress": True,
     "save_every": 1,  # epochs
 }
 
@@ -78,12 +84,21 @@ class Pretrainer:
         last: Dict[str, float] = {}
         for epoch in range(epochs):
             running = 0.0
+            use_bar = tqdm is not None and self.cfg.get("progress", True)
+            bar = tqdm(total=len(train_loader), desc=f"pretrain e{epoch}",
+                       leave=False, dynamic_ncols=True) if use_bar else None
             for i, batch in enumerate(train_loader):
                 step_losses = self.train_step(batch)
                 running += step_losses["total"]
                 last = step_losses
+                if bar is not None:
+                    bar.update(1)
+                    bar.set_postfix(loss=f"{step_losses['total']:.4f}",
+                                    avg=f"{running / (i + 1):.4f}")
                 if (i + 1) % self.cfg["log_every"] == 0:
-                    self._log(format_metrics(step_losses, prefix=f"[pretrain e{epoch} s{i + 1}]"))
+                    self._log(format_metrics(step_losses, prefix=f"[pretrain e{epoch} s{i + 1}/{len(train_loader)}]"))
+            if bar is not None:
+                bar.close()
 
             avg = running / max(1, len(train_loader))
             self._log(f"[pretrain e{epoch}] avg_total_loss={avg:.4f}")

@@ -5,16 +5,17 @@
 #   bash scripts/pretrain_map_only.sh device=cuda
 set -euo pipefail
 cd "$(dirname "$0")/.."          # -> rec/
+source "$(dirname "$0")/_env.sh"
 
 SCENARIO="map_only"
 PRETRAIN_RUN="pretrain_${SCENARIO}"
 
 echo "[${SCENARIO}] === Pre-training ==="
-python -m newsrec.scripts.run_pretrain \
+$PY -m newsrec.scripts.run_pretrain \
     --config newsrec/config/pretrain/${SCENARIO}.yaml "$@"
 
 echo "[${SCENARIO}] === PAAC fine-tuning (loading pretrained backbone) ==="
-python -m newsrec.scripts.run_finetune \
+$PY -m newsrec.scripts.run_finetune \
     --config newsrec/config/finetune/paac.yaml \
     run_name=finetune_${SCENARIO} \
     finetune.pretrained_ckpt=checkpoints/${PRETRAIN_RUN}/pretrain/best "$@"
