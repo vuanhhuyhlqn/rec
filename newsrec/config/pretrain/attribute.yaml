@@ -1,0 +1,7 @@
+# Scenario: attribute / category focused pre-training (AAP + MAP).
+_base_: ../base.yaml
+run_name: pretrain_attribute
+pretrain:
+  tau: 0.1
+  tasks: [aap, map]
+  training: {lr: 0.0001, epochs: 10, batch_size: 32, log_every: 50, save_every: 1, num_workers: 4}

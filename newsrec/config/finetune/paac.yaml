@@ -1,0 +1,43 @@
+# PAAC fine-tuning with default lambda / beta / gamma / tau.
+_base_: ../base.yaml
+
+run_name: finetune_paac
+
+finetune:
+  # Optionally start from a pre-trained backbone checkpoint, e.g.
+  # pretrained_ckpt: checkpoints/pretrain_full/pretrain/best
+  pretrained_ckpt: null
+
+  negatives_per_pos: 1
+  batch_size: 32
+  num_workers: 4
+
+  # Multi-task weights: L_total = L_rec + l1*L_sa + l2*L_cl + l3*||Theta||^2
+  lambda1: 0.1     # L_sa  (popularity-aware supervised alignment)
+  lambda2: 0.1     # L_cl  (re-weighting contrastive learning)
+  lambda3: 0.0001  # L2 regularisation
+
+  # PAAC hyper-parameters
+  sa_ratio: 0.5
+  cl_x_percent: 50.0
+  cl_beta: 1.0
+  cl_gamma: 0.5
+  cl_tau: 0.1
+  cl_dropout: 0.1
+  cl_noise: 0.1
+
+  # Optimiser / loop
+  lr: 0.0001
+  weight_decay: 0.0
+  grad_clip: 1.0
+  epochs: 8
+  log_every: 50
+  eval_every: 1
+  max_eval_impressions: 5000
+
+  # Gradual LoRA unfreeze: [epoch, num_top_BERT_layers_trainable]
+  lora_schedule:
+    - [0, 0]
+    - [2, 2]
+    - [4, 6]
+    - [6, 12]

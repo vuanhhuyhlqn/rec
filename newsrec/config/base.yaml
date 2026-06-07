@@ -1,0 +1,58 @@
+# Shared base config for the news recommender.
+# Inherited by the pretrain / finetune presets via the `_base_` key.
+
+run_name: base
+seed: 42
+device: cpu          # set to "cuda" for GPU training (off-machine)
+
+data:
+  train_dir: dataset/train
+  dev_dir: dataset/dev
+  # Auto-download: if the local split is missing and a dataset repo is set,
+  # the split is fetched from the HF Hub (see scripts/push_dataset.py).
+  hf_dataset_repo: huyva/mind-small   # set to null to disable remote fetch
+  auto_download: true                 # downloads only when local split is missing
+  download_dir: dataset               # auto-downloaded splits land in dataset/<split>/
+  train_subfolder: train
+  dev_subfolder: dev
+  max_title_len: 64        # BERT token length for title + abstract
+  max_history: 50          # max user history length
+  min_seq_len: 3           # pretrain: drop users with shorter histories
+  mask_prob: 0.15          # MIP/MAP masking probability
+
+model:
+  plm:
+    model_name: bert-base-uncased
+    pretrained: true
+    use_lora: true
+    lora_r: 8
+    lora_alpha: 16
+    lora_dropout: 0.1
+  model_dim: 256
+  news_encoder:
+    num_layers: 2
+    num_heads: 8
+    dropout: 0.1
+  user_encoder:
+    num_layers: 2
+    num_heads: 8
+    dropout: 0.1
+  score:
+    type: cosine
+    temperature: 1.0
+  max_title_len: 64
+  max_history_len: 50
+
+logging:
+  log_dir: logs
+  level: INFO
+
+checkpoint:
+  dir: checkpoints
+
+# HuggingFace Hub checkpointing. Uploads run asynchronously in a background
+# thread. Requires the HF_TOKEN environment variable when push_to_hub is true.
+hub:
+  push_to_hub: false
+  hub_repo_id: your-username/newsrec-mind
+  hub_private: false

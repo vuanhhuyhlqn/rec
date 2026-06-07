@@ -1,0 +1,18 @@
+# Secrets / environment
+.env
+.env.*
+
+# Runtime artifacts
+logs/
+checkpoints/
+dataset/
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+
+dataset/*

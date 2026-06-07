@@ -1,0 +1,23 @@
+# Pre-training with ALL five self-supervised tasks enabled.
+_base_: ../base.yaml
+
+run_name: pretrain_full
+
+pretrain:
+  tau: 0.1
+  # Tasks can be a list (all weight 1.0) or a mapping with per-task weights.
+  tasks:
+    aap: {enabled: true, weight: 1.0}
+    mip: {enabled: true, weight: 1.0}
+    map: {enabled: true, weight: 1.0}
+    sp:  {enabled: true, weight: 1.0}
+    bsm: {enabled: true, weight: 1.0}
+  training:
+    lr: 0.0001
+    weight_decay: 0.0
+    grad_clip: 1.0
+    epochs: 10
+    batch_size: 32
+    log_every: 50
+    save_every: 1
+    num_workers: 4

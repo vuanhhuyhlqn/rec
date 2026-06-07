@@ -1,0 +1,7 @@
+# Scenario: sequence / user focused pre-training (MIP + SP + BSM).
+_base_: ../base.yaml
+run_name: pretrain_sequence_level
+pretrain:
+  tau: 0.1
+  tasks: [mip, sp, bsm]
+  training: {lr: 0.0001, epochs: 10, batch_size: 32, log_every: 50, save_every: 1, num_workers: 4}
