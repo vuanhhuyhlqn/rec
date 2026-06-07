@@ -36,7 +36,7 @@ finetune:
   weight_decay: 0.0
   grad_clip: 1.0
   epochs: 8
-  log_every: 50
+  log_every: 25
   eval_every: 1
   max_eval_impressions: 5000
 
