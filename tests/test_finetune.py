@@ -52,10 +52,38 @@ def test_dataset_builds_valid_triplets():
     ds = FinetuneTripletDataset(_impressions(), table, max_history=5)
     # Only the first two impressions yield triplets (third has no click).
     assert len(ds) == 2
-    # negatives must be non-clicked in the same impression
-    for history, pos, neg in ds.triplets:
+    # each entry stores (history, pos, non_clicked_pool); the sampled negative
+    # must be a non-clicked item of the same impression.
+    for i, (history, pos, non_clicked) in enumerate(ds.triplets):
         assert pos in {"N3", "N7"}
-        assert neg in {"N4", "N5", "N8"}
+        assert set(non_clicked) <= {"N4", "N5", "N8"}
+        assert ds._sample_neg(non_clicked, i) in {"N4", "N5", "N8"}
+
+
+def test_negative_resampling_varies_by_epoch():
+    table = _fake_token_table()
+    ds = FinetuneTripletDataset(_impressions(), table, max_history=5,
+                                negatives_per_pos=1, resample_negatives=True)
+    # Deterministic within an epoch, reproducible across calls.
+    ds.set_epoch(0)
+    e0 = [ds._sample_neg(nc, i) for i, (_, _, nc) in enumerate(ds.triplets)]
+    assert e0 == [ds._sample_neg(nc, i) for i, (_, _, nc) in enumerate(ds.triplets)]
+    # Across many epochs at least one sampled negative changes (when a pool of
+    # >1 candidates exists).
+    seqs = []
+    for ep in range(8):
+        ds.set_epoch(ep)
+        seqs.append(tuple(ds._sample_neg(nc, i) for i, (_, _, nc) in enumerate(ds.triplets)))
+    assert len(set(seqs)) > 1, "negatives should be reshuffled across epochs"
+
+    # With resampling off, the negative is fixed across epochs.
+    ds_fixed = FinetuneTripletDataset(_impressions(), table, max_history=5,
+                                      resample_negatives=False)
+    ds_fixed.set_epoch(0)
+    a = [ds_fixed._sample_neg(nc, i) for i, (_, _, nc) in enumerate(ds_fixed.triplets)]
+    ds_fixed.set_epoch(5)
+    b = [ds_fixed._sample_neg(nc, i) for i, (_, _, nc) in enumerate(ds_fixed.triplets)]
+    assert a == b
 
 
 def test_dataset_item_shapes():

@@ -46,6 +46,7 @@ def run_finetune(cfg):
         negatives_per_pos=int(cfg.get("finetune.negatives_per_pos", 1)),
         seed=int(cfg.get("seed", 42)),
         popularity=popularity,
+        resample_negatives=bool(cfg.get("finetune.resample_negatives", True)),
     )
     logger.info(f"Finetune triplets: {len(dataset)}")
 
@@ -60,7 +61,7 @@ def run_finetune(cfg):
     # only pass the trainer-relevant keys
     trainer_cfg = {k: v for k, v in ft_cfg.items()
                    if k not in ("pretrained_ckpt", "negatives_per_pos",
-                                "batch_size", "num_workers")}
+                                "batch_size", "num_workers", "resample_negatives")}
     trainer_cfg["max_history"] = int(cfg.get("data.max_history", 50))
 
     tuner = Finetuner(model, config=trainer_cfg, device=device, logger=logger,

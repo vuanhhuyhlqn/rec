@@ -33,14 +33,20 @@ class FinetuneTripletDataset(Dataset):
         negatives_per_pos: int = 1,
         seed: int = 42,
         popularity=None,
+        resample_negatives: bool = True,
     ):
         self.news_tokens = news_tokens
         self.max_history = max_history
         self.max_len = news_tokens.max_len
         self.popularity = popularity
-        self._rng = random.Random(seed)
+        self.seed = int(seed)
+        self.resample_negatives = resample_negatives
+        self.epoch = 0
 
-        self.triplets: List[Tuple[List[str], str, str]] = []
+        # Each entry stores the *pool* of non-clicked candidates rather than a
+        # single fixed negative; the negative is drawn in ``__getitem__`` so it
+        # can be reshuffled every epoch (see ``set_epoch`` / ``_sample_neg``).
+        self.triplets: List[Tuple[List[str], str, List[str]]] = []
         for imp in impressions:
             clicked = imp.clicked
             non_clicked = imp.non_clicked
@@ -51,8 +57,26 @@ class FinetuneTripletDataset(Dataset):
                 if not self._in_table(pos):
                     continue
                 for _ in range(negatives_per_pos):
-                    neg = self._rng.choice(non_clicked)
-                    self.triplets.append((history, pos, neg))
+                    self.triplets.append((history, pos, non_clicked))
+
+    def set_epoch(self, epoch: int) -> None:
+        """Reshuffle the per-sample negatives for ``epoch``.
+
+        Called once at the start of each epoch by the trainer. The sampled
+        negative for a given item is a deterministic function of
+        ``(seed, epoch, index)``: reproducible across runs, independent of
+        DataLoader-worker access order, and different every epoch (when
+        ``resample_negatives`` is True).
+        """
+        self.epoch = int(epoch)
+
+    def _sample_neg(self, non_clicked: List[str], index: int) -> str:
+        if len(non_clicked) == 1:
+            return non_clicked[0]
+        base = self.seed * 1_000_003 + index
+        if self.resample_negatives:
+            base = base * 1_000_003 + self.epoch
+        return random.Random(base).choice(non_clicked)
 
     def _in_table(self, nid: str) -> bool:
         has = getattr(self.news_tokens, "has", None)
@@ -102,7 +126,8 @@ class FinetuneTripletDataset(Dataset):
         return ids, attn, mask, pop
 
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        history, pos, neg = self.triplets[index]
+        history, pos, non_clicked = self.triplets[index]
+        neg = self._sample_neg(non_clicked, index)
         hist_ids, hist_attn, hist_mask, hist_pop = self._history_tensors(history)
         pos_ids, pos_attn = self._news_tensor(pos)
         neg_ids, neg_attn = self._news_tensor(neg)

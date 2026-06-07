@@ -74,7 +74,21 @@ class PretrainDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.mask_prob = mask_prob
         self.max_len = news_tokens.max_len
-        self._rng = random.Random(seed)
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        """Reshuffle the MIP masking / SP segment for ``epoch``.
+
+        Called once per epoch by the trainer. The stochastic masks for a given
+        item are a deterministic function of ``(seed, epoch, index)``:
+        reproducible across runs, independent of DataLoader-worker access order,
+        and different every epoch.
+        """
+        self.epoch = int(epoch)
+
+    def _rng_for(self, index: int) -> random.Random:
+        return random.Random((self.seed * 1_000_003 + self.epoch) * 1_000_003 + index)
 
     def __len__(self) -> int:
         return len(self.sequences)
@@ -96,6 +110,7 @@ class PretrainDataset(Dataset):
         n = len(seq)
         S = self.max_seq_len
         L = self.max_len
+        rng = self._rng_for(index)
 
         input_ids = torch.zeros(S, L, dtype=torch.long)
         attention_mask = torch.zeros(S, L, dtype=torch.long)
@@ -111,7 +126,7 @@ class PretrainDataset(Dataset):
             category[i] = self._cat(nid)
 
         # --- MIP / MAP masking -------------------------------------------------
-        masked_positions = [i for i in range(n) if self._rng.random() < self.mask_prob]
+        masked_positions = [i for i in range(n) if rng.random() < self.mask_prob]
         if not masked_positions and n > 0:
             masked_positions = [n - 1]  # always mask at least one (S3Rec-style)
         for i in masked_positions:
@@ -120,8 +135,8 @@ class PretrainDataset(Dataset):
         # --- SP segment --------------------------------------------------------
         segment_mask = torch.zeros(S, dtype=torch.float)
         if n >= 2:
-            seg_len = self._rng.randint(1, max(1, n // 2))
-            start = self._rng.randint(0, n - seg_len)
+            seg_len = rng.randint(1, max(1, n // 2))
+            start = rng.randint(0, n - seg_len)
             segment_mask[start:start + seg_len] = 1.0
         elif n == 1:
             segment_mask[0] = 1.0

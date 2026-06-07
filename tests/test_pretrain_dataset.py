@@ -65,6 +65,28 @@ def test_at_least_one_masked_and_within_valid():
     assert torch.all((item["mip_mask"] * (1 - item["seq_mask"])) == 0)
 
 
+def test_masking_resamples_per_epoch():
+    table = _table()
+    # a long sequence so masking/segment have room to vary
+    seqs = [("U1", [f"N{i}" for i in range(12)])]
+    ds = PretrainDataset(seqs, table, _category_ids(), max_seq_len=16, mask_prob=0.3)
+
+    def signature():
+        it = ds[0]
+        return (tuple(it["mip_mask"].tolist()), tuple(it["segment_mask"].tolist()))
+
+    # Deterministic within an epoch (reproducible across accesses).
+    ds.set_epoch(0)
+    assert signature() == signature()
+
+    # Varies across epochs.
+    sigs = set()
+    for ep in range(8):
+        ds.set_epoch(ep)
+        sigs.add(signature())
+    assert len(sigs) > 1, "MIP/SP masks should be reshuffled across epochs"
+
+
 def test_segment_is_contiguous_and_removed_from_context():
     table = _table()
     seqs = [("U1", [f"N{i}" for i in range(8)])]

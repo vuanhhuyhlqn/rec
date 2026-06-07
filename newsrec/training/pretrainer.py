@@ -98,6 +98,12 @@ class Pretrainer:
         epochs = epochs or self.cfg["epochs"]
         last: Dict[str, float] = {}
         for epoch in range(epochs):
+            # Reshuffle per-sample MIP/SP masks for this epoch (no-op if the
+            # dataset doesn't support it).
+            ds = getattr(train_loader, "dataset", None)
+            if hasattr(ds, "set_epoch"):
+                ds.set_epoch(epoch)
+
             running = 0.0
             use_bar = tqdm is not None and self.cfg.get("progress", True)
             bar = tqdm(total=len(train_loader), desc=f"pretrain e{epoch}",
