@@ -26,8 +26,9 @@ finetune:
   lambda3: 0.0001  # L2 regularisation
 
   # PAAC hyper-parameters
-  sa_ratio: 0.5
-  cl_x_percent: 50.0
+  # popular vs unpopular split: popular = top 80% by popularity, unpopular = bottom 20%
+  sa_ratio: 0.8
+  cl_x_percent: 80.0
   cl_beta: 1.0
   cl_gamma: 0.5
   cl_tau: 0.1
