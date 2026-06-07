@@ -18,8 +18,10 @@ from __future__ import annotations
 import argparse
 import os
 
+from newsrec.data.download import ensure_mind_split
 from newsrec.data.mind_parser import load_mind_split
 from newsrec.data.vocab import build_category_vocab, build_news_vocab
+from newsrec.utils.env import get_hf_token, load_dotenv
 
 
 def _default(path: str) -> str:
@@ -32,7 +34,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect a MIND dataset split.")
     parser.add_argument("--train", default=_default("dataset/train"))
     parser.add_argument("--dev", default=_default("dataset/dev"))
+    parser.add_argument("--repo", default="huyva/mind-small",
+                        help="HF dataset repo to download from when a split is missing")
+    parser.add_argument("--download-dir", default=_default("dataset"))
+    parser.add_argument("--no-download", action="store_true",
+                        help="do not auto-download; use local paths only")
     args = parser.parse_args()
+
+    # Auto-download missing splits (mirrors the training entry points) so this
+    # works on a fresh machine / `setup.sh --with-data`.
+    if not args.no_download:
+        load_dotenv(".env")
+        token = get_hf_token()
+        args.train = ensure_mind_split(args.train, args.repo, "train", True, token,
+                                       download_dir=args.download_dir)
+        args.dev = ensure_mind_split(args.dev, args.repo, "dev", True, token,
+                                     download_dir=args.download_dir)
 
     print(f"Loading train split from: {args.train}")
     train = load_mind_split(args.train)
