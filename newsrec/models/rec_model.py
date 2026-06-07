@@ -67,14 +67,34 @@ class NewsRecModel(nn.Module):
     def encode_news(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> torch.Tensor:
-        """``[..., L]`` token ids → ``[..., D]`` news vectors (any leading dims)."""
+        """``[..., L]`` token ids → ``[..., D]`` news vectors (any leading dims).
+
+        Padding rows (no real tokens, e.g. empty history slots when the user has
+        fewer than ``max_history`` clicks) are skipped entirely instead of being
+        pushed through BERT — those rows are masked out downstream anyway, and
+        encoding them dominates the cost when histories are short. Their output
+        is left as zeros.
+        """
         lead_shape = input_ids.shape[:-1]
         seq_len = input_ids.shape[-1]
         flat_ids = input_ids.reshape(-1, seq_len)
         flat_mask = attention_mask.reshape(-1, seq_len)
-        word_emb, word_mask = self.plm(flat_ids, flat_mask)
-        news_vec = self.news_encoder(word_emb, word_mask)  # [N, D]
-        return news_vec.reshape(*lead_shape, news_vec.shape[-1])
+        n_rows = flat_ids.shape[0]
+        out_dim = self.news_encoder.output_dim
+
+        valid = flat_mask.sum(dim=-1) > 0  # rows that contain at least one real token
+        if bool(valid.all()):
+            word_emb, word_mask = self.plm(flat_ids, flat_mask)
+            news_vec = self.news_encoder(word_emb, word_mask)  # [N, D]
+        elif bool(valid.any()):
+            word_emb, word_mask = self.plm(flat_ids[valid], flat_mask[valid])
+            sub = self.news_encoder(word_emb, word_mask)       # [N_valid, D]
+            # Match the encoder output dtype (e.g. bf16 under autocast).
+            news_vec = sub.new_zeros((n_rows, out_dim))
+            news_vec[valid] = sub
+        else:
+            news_vec = flat_ids.new_zeros((n_rows, out_dim), dtype=torch.float)
+        return news_vec.reshape(*lead_shape, out_dim)
 
     def encode_user(
         self,

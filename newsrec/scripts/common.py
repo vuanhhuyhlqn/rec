@@ -9,6 +9,7 @@ wiring the logger + (async-HF) checkpoint manager from a config.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Tuple
 
@@ -82,12 +83,24 @@ def resolve_batch_size(configured, dataset, compute_losses, optimizer, model,
 
     def _build(bs):
         n = len(dataset)
-        return stack_collate([dataset[i % n] for i in range(bs)])
+        if hasattr(dataset, "heaviest_indices"):
+            # Worst-case batch (longest histories) so the chosen size is safe for
+            # every batch, since padded rows are skipped and memory now varies
+            # with real history length.
+            heavy = dataset.heaviest_indices(bs)
+            idx = [heavy[i % len(heavy)] for i in range(bs)]
+        else:
+            idx = [i % n for i in range(bs)]
+        return stack_collate([dataset[i] for i in idx])
 
     def _probe(batch):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        out = compute_losses(batch)
+        amp = bool(cfg.get("amp", True)) and torch.device(device).type == "cuda"
+        ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if amp \
+            else contextlib.nullcontext()
+        with ctx:
+            out = compute_losses(batch)
         out["total"].backward()
         optimizer.zero_grad(set_to_none=True)
 

@@ -17,6 +17,9 @@ finetune:
   fallback_batch_size: 8   # used when auto is requested but no GPU is present
   num_workers: 4
 
+  # bf16 mixed precision on GPU (~1.5-2x faster, lower memory). Ignored on CPU.
+  amp: true
+
   # Multi-task weights: L_total = L_rec + l1*L_sa + l2*L_cl + l3*||Theta||^2
   lambda1: 0.1     # L_sa  (popularity-aware supervised alignment)
   lambda2: 0.1     # L_cl  (re-weighting contrastive learning)

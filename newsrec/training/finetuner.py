@@ -17,6 +17,7 @@ PAAC ``L_sa`` / ``L_cl`` terms without touching the training loop.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Dict, Optional
 
 import torch
@@ -187,10 +188,18 @@ class Finetuner:
         losses["total"] = total
         return losses
 
+    def _autocast(self):
+        # bf16 mixed precision on GPU: ~1.5-2x faster + lower memory (so the
+        # auto batch-finder can pick a larger batch). bf16 needs no GradScaler.
+        if self.cfg.get("amp", True) and self.device.type == "cuda":
+            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        return contextlib.nullcontext()
+
     # ------------------------------------------------------------------ #
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         self.model.train()
-        losses = self.compute_losses(batch)
+        with self._autocast():
+            losses = self.compute_losses(batch)
         self.optimizer.zero_grad()
         losses["total"].backward()
         if self.cfg["grad_clip"]:

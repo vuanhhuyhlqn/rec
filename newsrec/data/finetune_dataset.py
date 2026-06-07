@@ -66,6 +66,19 @@ class FinetuneTripletDataset(Dataset):
     def __len__(self) -> int:
         return len(self.triplets)
 
+    def heaviest_indices(self, k: int):
+        """Indices of the ``k`` triplets with the longest (capped) history.
+
+        Used by the auto batch-size finder so it probes the worst-case memory
+        footprint: with padded rows now skipped during encoding, per-batch memory
+        scales with real history length, so probing short-history samples would
+        under-estimate and risk a mid-training OOM.
+        """
+        order = sorted(range(len(self.triplets)),
+                       key=lambda i: min(len(self.triplets[i][0]), self.max_history),
+                       reverse=True)
+        return order[:max(1, k)]
+
     # ------------------------------------------------------------------ #
     def _news_tensor(self, nid: str) -> Tuple[torch.Tensor, torch.Tensor]:
         tok = self.news_tokens.get(nid)

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+import contextlib
+
 import torch
 from torch.utils.data import DataLoader
 
@@ -73,9 +75,16 @@ class Pretrainer:
             self.logger.debug(msg)
 
     # ------------------------------------------------------------------ #
+    def _autocast(self):
+        # bf16 mixed precision on GPU (no GradScaler needed for bf16).
+        if self.cfg.get("amp", True) and self.device.type == "cuda":
+            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        return contextlib.nullcontext()
+
     def train_step(self, batch) -> Dict[str, float]:
         self.module.train()
-        losses = self.module.compute_losses(batch)
+        with self._autocast():
+            losses = self.module.compute_losses(batch)
         self.optimizer.zero_grad()
         losses["total"].backward()
         if self.cfg["grad_clip"]:

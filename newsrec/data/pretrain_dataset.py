@@ -79,6 +79,14 @@ class PretrainDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sequences)
 
+    def heaviest_indices(self, k: int):
+        """Indices of the ``k`` longest (capped) sequences — worst-case memory
+        for the auto batch-size finder (see FinetuneTripletDataset.heaviest_indices)."""
+        order = sorted(range(len(self.sequences)),
+                       key=lambda i: min(len(self.sequences[i]), self.max_seq_len),
+                       reverse=True)
+        return order[:max(1, k)]
+
     # ------------------------------------------------------------------ #
     def _cat(self, nid: str) -> int:
         return int(self.category_ids.get(nid, 0))
