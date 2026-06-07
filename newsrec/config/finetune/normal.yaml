@@ -1,0 +1,49 @@
+# Normal fine-tuning: plain recommender, NO PAAC.
+# Trains only the recommendation loss + L2 regularisation:
+#     L_total = L_rec(BPR) + l3*||Theta||^2
+# i.e. lambda1 (L_sa) and lambda2 (L_cl) are switched off. PAAC adds no model
+# parameters, so checkpoints from this mode are fully interchangeable with the
+# PAAC config (same NewsRecModel + LoRA + tokenizer).
+_base_: ../base.yaml
+
+run_name: finetune_normal
+
+finetune:
+  # Optionally start from a pre-trained backbone checkpoint, e.g.
+  # pretrained_ckpt: checkpoints/pretrain_full/pretrain/best
+  pretrained_ckpt: null
+
+  negatives_per_pos: 1
+  # batch_size: "auto" probes the GPU for the largest batch that fits (no OOM).
+  # Set an integer to pin it. On CPU, auto falls back to fallback_batch_size.
+  batch_size: auto
+  max_batch_size: 256      # upper bound for the auto search
+  batch_safety: 0.95       # use 95% of the largest fitting batch (headroom)
+  fallback_batch_size: 8   # used when auto is requested but no GPU is present
+  num_workers: 4
+
+  # bf16 mixed precision on GPU (~1.5-2x faster, lower memory). Ignored on CPU.
+  amp: true
+
+  # Multi-task weights: L_total = L_rec + l1*L_sa + l2*L_cl + l3*||Theta||^2
+  # PAAC OFF: alignment + contrast disabled, only BPR + L2 remain.
+  lambda1: 0.0     # L_sa  (popularity-aware supervised alignment) -> off
+  lambda2: 0.0     # L_cl  (re-weighting contrastive learning)     -> off
+  lambda3: 0.0001  # L2 regularisation
+
+  # Optimiser / loop (kept identical to paac.yaml for apples-to-apples runs)
+  lr: 0.0001
+  weight_decay: 0.0
+  grad_clip: 1.0
+  epochs: 8
+  log_every: 50
+  eval_every: 1
+  max_eval_impressions: 5000
+
+  # Gradual LoRA unfreeze: [epoch, num_top_PLM_layers_trainable]
+  # (clamped to the PLM layer count; DistilBERT has 6 layers.)
+  lora_schedule:
+    - [0, 0]
+    - [2, 2]
+    - [4, 6]
+    - [6, 12]
