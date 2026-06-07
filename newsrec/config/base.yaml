@@ -3,7 +3,7 @@
 
 run_name: base
 seed: 42
-device: cpu          # set to "cuda" for GPU training (off-machine)
+device: auto         # auto -> cuda if a GPU is visible, else cpu (override with device=cuda/cpu)
 
 data:
   train_dir: dataset/train

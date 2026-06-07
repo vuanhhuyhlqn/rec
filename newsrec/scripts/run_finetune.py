@@ -23,6 +23,8 @@ from newsrec.scripts.common import (
     build_checkpoint_manager,
     build_logger,
     load_news_and_tokens,
+    resolve_batch_size,
+    resolve_device,
 )
 from newsrec.training.finetuner import Finetuner
 from newsrec.training.lora_schedule import LoRAUnfreezeScheduler
@@ -35,7 +37,7 @@ def run_finetune(cfg):
     load_dotenv(cfg.get("env_file", ".env"))
     set_seed(int(cfg.get("seed", 42)))
     logger = build_logger(cfg, "finetune")
-    device = cfg.get("device", "cpu")
+    device = resolve_device(cfg, logger)
 
     train, dev, news_tokens, category_ids, cat_vocab, popularity, encoder = load_news_and_tokens(cfg)
 
@@ -73,8 +75,13 @@ def run_finetune(cfg):
     if pretrained:
         tuner.load_pretrained(pretrained)
 
+    batch_size = resolve_batch_size(
+        ft_cfg.get("batch_size", 16), dataset, tuner.compute_losses, tuner.optimizer,
+        tuner.model, device, ft_cfg, logger,
+    )
+
     loader = DataLoader(
-        dataset, batch_size=int(ft_cfg.get("batch_size", 16)),
+        dataset, batch_size=batch_size,
         shuffle=True, collate_fn=stack_collate,
         num_workers=int(ft_cfg.get("num_workers", 0)),
     )

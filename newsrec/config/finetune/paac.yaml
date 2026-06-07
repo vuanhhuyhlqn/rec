@@ -9,7 +9,12 @@ finetune:
   pretrained_ckpt: null
 
   negatives_per_pos: 1
-  batch_size: 32
+  # batch_size: "auto" probes the GPU for the largest batch that fits (no OOM).
+  # Set an integer to pin it. On CPU, auto falls back to fallback_batch_size.
+  batch_size: auto
+  max_batch_size: 256      # upper bound for the auto search
+  batch_safety: 0.9        # use 90% of the largest fitting batch (headroom)
+  fallback_batch_size: 8   # used when auto is requested but no GPU is present
   num_workers: 4
 
   # Multi-task weights: L_total = L_rec + l1*L_sa + l2*L_cl + l3*||Theta||^2

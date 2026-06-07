@@ -25,6 +25,8 @@ from newsrec.scripts.common import (
     build_checkpoint_manager,
     build_logger,
     load_news_and_tokens,
+    resolve_batch_size,
+    resolve_device,
 )
 from newsrec.training.pretrainer import Pretrainer
 from newsrec.utils.config import load_config
@@ -36,7 +38,7 @@ def run_pretrain(cfg):
     load_dotenv(cfg.get("env_file", ".env"))
     set_seed(int(cfg.get("seed", 42)))
     logger = build_logger(cfg, "pretrain")
-    device = cfg.get("device", "cpu")
+    device = resolve_device(cfg, logger)
 
     train, dev, news_tokens, category_ids, cat_vocab, popularity, encoder = load_news_and_tokens(cfg)
 
@@ -66,14 +68,20 @@ def run_pretrain(cfg):
     ckpt = build_checkpoint_manager(cfg, "pretrain", logger, tokenizer=encoder.tokenizer)
     train_cfg = cfg.get("pretrain.training", {})
     train_cfg = train_cfg.to_dict() if hasattr(train_cfg, "to_dict") else dict(train_cfg)
+
+    trainer = Pretrainer(module, config=train_cfg, device=device, logger=logger,
+                         checkpoint_manager=ckpt)
+
+    batch_size = resolve_batch_size(
+        train_cfg.get("batch_size", 16), dataset, trainer.module.compute_losses,
+        trainer.optimizer, trainer.module, device, train_cfg, logger,
+    )
     loader = DataLoader(
-        dataset, batch_size=int(train_cfg.get("batch_size", 16)),
+        dataset, batch_size=batch_size,
         shuffle=True, collate_fn=stack_collate,
         num_workers=int(train_cfg.get("num_workers", 0)),
     )
 
-    trainer = Pretrainer(module, config=train_cfg, device=device, logger=logger,
-                         checkpoint_manager=ckpt)
     trainer.train(loader)
     ckpt.close()
     logger.info("Pre-training complete.")

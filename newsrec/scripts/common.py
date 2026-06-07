@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from typing import Tuple
 
+import torch
+
 from newsrec.data.download import ensure_mind_split
 from newsrec.data.mind_parser import load_mind_split
 from newsrec.data.news_tokens import NewsTokenTable
@@ -29,6 +31,80 @@ def build_logger(cfg, stage: str):
     level = cfg.get("logging.level", "INFO")
     return setup_logger(name=f"newsrec.{stage}", log_dir=log_dir, stage=stage,
                         run_name=run_name, level=level)
+
+
+def resolve_device(cfg, logger=None) -> str:
+    """
+    Resolve the training device from config.
+
+    * ``auto`` (or unset) -> ``cuda`` if a GPU is visible, else ``cpu``.
+    * ``cuda`` requested but no GPU available -> fall back to ``cpu`` with a
+      warning (prevents silent CPU OOM when a run *expected* a GPU).
+    * any explicit value is honoured otherwise.
+    """
+    requested = str(cfg.get("device", "auto")).lower()
+    has_cuda = torch.cuda.is_available()
+    if requested in ("auto", "", "none"):
+        device = "cuda" if has_cuda else "cpu"
+    elif requested == "cuda" and not has_cuda:
+        if logger:
+            logger.warning("device=cuda requested but no GPU is visible; falling back to cpu")
+        device = "cpu"
+    else:
+        device = requested
+    if logger:
+        logger.info(f"Using device: {device}"
+                    + (f" ({torch.cuda.get_device_name(0)})" if device == "cuda" else ""))
+    return device
+
+
+def resolve_batch_size(configured, dataset, compute_losses, optimizer, model,
+                       device, cfg, logger=None) -> int:
+    """
+    Return an integer batch size.
+
+    If ``configured`` is the string ``"auto"`` (or ``cfg['auto_batch_size']`` is
+    truthy), probe the GPU for the largest batch size that fits (see
+    :func:`newsrec.training.batch_finder.find_max_batch_size`). On non-CUDA
+    devices auto-sizing is not possible, so a ``fallback_batch_size`` is used.
+
+    Relevant ``cfg`` keys: ``max_batch_size`` (search cap, default 256),
+    ``batch_safety`` (headroom multiplier, default 0.9),
+    ``fallback_batch_size`` (CPU fallback, default 8).
+    """
+    auto = (isinstance(configured, str) and configured.lower() == "auto") \
+        or bool(cfg.get("auto_batch_size", False))
+    if not auto:
+        return int(configured)
+
+    from newsrec.data.collate import stack_collate
+    from newsrec.training.batch_finder import find_max_batch_size
+
+    def _build(bs):
+        n = len(dataset)
+        return stack_collate([dataset[i % n] for i in range(bs)])
+
+    def _probe(batch):
+        model.train()
+        optimizer.zero_grad(set_to_none=True)
+        out = compute_losses(batch)
+        out["total"].backward()
+        optimizer.zero_grad(set_to_none=True)
+
+    cap = max(1, min(int(cfg.get("max_batch_size", 256)), len(dataset)))
+    found = find_max_batch_size(
+        _build, _probe, device=device, max_batch=cap,
+        safety=float(cfg.get("batch_safety", 0.9)), logger=logger,
+    )
+    if found is None:
+        fallback = int(cfg.get("fallback_batch_size", 8))
+        if logger:
+            logger.info(f"auto batch size requested but device is not CUDA; "
+                        f"using fallback batch_size={fallback}")
+        return fallback
+    if logger:
+        logger.info(f"auto-selected batch_size={found}")
+    return found
 
 
 def build_checkpoint_manager(cfg, stage: str, logger, tokenizer=None):

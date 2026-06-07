@@ -5,7 +5,11 @@ description = "Popularity-debiased MIND news recommender (pre-train -> PAAC fine
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.1",
+    # torch is routed to the CUDA 12.8 wheel index (see [tool.uv] below).
+    # The default PyPI wheels ship a CUDA 13 build that is incompatible with
+    # common datacenter/consumer drivers (e.g. 570.x / CUDA 12.8) and with
+    # Blackwell GPUs via cu128. Keep this floor at a Blackwell-capable release.
+    "torch>=2.7",
     "transformers>=4.40",
     "peft>=0.10",
     "huggingface_hub>=0.23",
@@ -31,3 +35,15 @@ packages = ["newsrec"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+# Install torch from the CUDA 12.8 wheel index so `uv sync` produces a GPU
+# build that matches CUDA 12.8 drivers and supports Blackwell (sm_120).
+# Verified working on an RTX 5070 Ti (driver 570.133, torch 2.11.0+cu128).
+# These cu128 wheels also install and run fine on CPU-only machines.
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
