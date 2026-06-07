@@ -134,7 +134,40 @@ def test_l_cl_runs_under_bf16_autocast_on_cpu():
     assert torch.isfinite(loss) and loss.dtype == torch.float32
 
 
-def test_augment_views_generator_is_reproducible():
+def test_l_cl_robust_to_norm_collapse():
+    """L_cl must stay low even when embeddings collapse in norm (L_sa effect).
+
+    With absolute augmentation noise, shrinking the embedding norm drives L_cl
+    toward log(N); scale-invariant noise keeps it bounded.
+    """
+    import math
+
+    torch.manual_seed(0)
+    N, D = 64, 32
+    base = torch.randn(D)
+    items = base.unsqueeze(0).repeat(N, 1) + 0.15 * torch.randn(N, D)
+    pop = torch.arange(N, dtype=torch.float)
+    lnN = math.log(N)
+
+    healthy = reweighting_contrastive_loss(items, pop, x_percent=80.0)
+    collapsed = reweighting_contrastive_loss(items * 0.02, pop, x_percent=80.0)
+    # Both stay well below the no-information fixed point despite the collapse.
+    assert healthy.item() < 0.3 * lnN
+    assert collapsed.item() < 0.3 * lnN
+
+
+def test_augment_noise_scales_with_magnitude():
+    """A 10x larger embedding should get ~10x larger absolute noise."""
+    torch.manual_seed(0)
+    small = torch.ones(4, 64)
+    big = torch.ones(4, 64) * 10.0
+    g1 = torch.Generator().manual_seed(7)
+    g2 = torch.Generator().manual_seed(7)
+    sa, _ = augment_views(small, dropout_p=0.0, noise_std=0.1, generator=g1)
+    ba, _ = augment_views(big, dropout_p=0.0, noise_std=0.1, generator=g2)
+    small_noise = (sa - small).abs().mean()
+    big_noise = (ba - big).abs().mean()
+    assert torch.allclose(big_noise, small_noise * 10.0, rtol=1e-4)
     """The generator arg must actually seed the augmentation (was a dead param)."""
     h = torch.randn(6, 16)
     g1 = torch.Generator().manual_seed(123)

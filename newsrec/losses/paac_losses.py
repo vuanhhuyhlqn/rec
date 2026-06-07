@@ -108,6 +108,11 @@ def augment_views(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Create two augmented views of ``h`` via feature dropout + Gaussian noise.
 
+    The Gaussian noise is **scale-invariant** (proportional to each row's RMS
+    magnitude), so the augmentation strength is ~``noise_std`` relative to the
+    embedding regardless of its norm. Absolute noise would dominate once
+    ``L_sa`` shrinks the embeddings, collapsing the contrastive signal.
+
     ``generator`` (if given) seeds the randomness for reproducibility. Note that
     ``*_like`` ops ignore a generator, so we draw explicitly with ``torch.rand``/
     ``torch.randn`` to honour it.
@@ -125,7 +130,12 @@ def augment_views(
             noise = torch.randn(
                 x.shape, device=x.device, dtype=x.dtype, generator=generator
             )
-            out = out + noise * noise_std
+            # Scale-invariant noise: proportional to each row's RMS magnitude so
+            # the augmentation strength stays ~noise_std (relative) regardless of
+            # the embedding norm. With absolute noise the positive pair stops
+            # standing out once L_sa shrinks the embeddings, driving L_cl -> log(N).
+            rms = x.norm(dim=-1, keepdim=True) / (x.shape[-1] ** 0.5)
+            out = out + noise * noise_std * rms
         return out
 
     return _aug(h), _aug(h)
