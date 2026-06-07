@@ -2,14 +2,19 @@
 plm_encoder.py — Module 0 (word embedder)
 ==========================================
 
-A BERT encoder wrapped with LoRA adapters that turns news ``input_ids`` into
-contextual *word* embeddings ``[B, L, D]`` (the news encoder, Module 1, pools
-these into a single news vector).
+A pretrained language model (PLM) wrapped with LoRA adapters that turns news
+``input_ids`` into contextual *word* embeddings ``[B, L, D]`` (the news encoder,
+Module 1, pools these into a single news vector).
+
+Supports BERT- and DistilBERT-family encoders; the LoRA target modules and the
+layer-name marker used for gradual unfreezing are auto-detected from the model
+architecture (so ``bert-base-uncased`` and ``distilbert-base-uncased`` both work
+without manual wiring).
 
 Key features
 ------------
 * LoRA (via ``peft``) on the attention / FFN projection matrices.  By default
-  the BERT backbone is frozen and only the LoRA adapters train.
+  the PLM backbone is frozen and only the LoRA adapters train.
 * :meth:`set_trainable_layers` implements **gradual unfreezing**: it makes the
   *base* weights of the top-``n`` transformer layers trainable (LoRA adapters
   always stay trainable).  ``n = 0`` → LoRA-only; ``n = num_layers`` → full
@@ -26,15 +31,27 @@ import torch
 from torch import nn
 
 
-DEFAULT_LORA_TARGETS = ["query", "key", "value", "dense"]
+# LoRA target projection names per architecture family.
+DEFAULT_LORA_TARGETS = ["query", "key", "value", "dense"]            # BERT
+DISTILBERT_LORA_TARGETS = ["q_lin", "k_lin", "v_lin", "out_lin", "lin1", "lin2"]
+
+# Marker substrings used to locate the transformer-layer index in a parameter
+# name, per architecture family.
+_LAYER_MARKERS = ("encoder.layer.", "transformer.layer.")
+
+
+def _default_lora_targets(model_type: str) -> List[str]:
+    if model_type == "distilbert":
+        return DISTILBERT_LORA_TARGETS
+    return DEFAULT_LORA_TARGETS
 
 
 class PLMEncoder(nn.Module):
-    """BERT + LoRA word embedder."""
+    """Pretrained LM (BERT / DistilBERT) + LoRA word embedder."""
 
     def __init__(
         self,
-        model_name: str = "bert-base-uncased",
+        model_name: str = "distilbert-base-uncased",
         pretrained: bool = True,
         use_lora: bool = True,
         lora_r: int = 8,
@@ -68,7 +85,10 @@ class PLMEncoder(nn.Module):
         if use_lora:
             from peft import LoraConfig, TaskType, get_peft_model
 
-            targets = lora_target_modules or DEFAULT_LORA_TARGETS
+            # Targets must match the *actual* built architecture (e.g. the
+            # offline test path always builds a BertModel).
+            model_type = getattr(self.bert.config, "model_type", "bert")
+            targets = lora_target_modules or _default_lora_targets(model_type)
             lora_cfg = LoraConfig(
                 task_type=TaskType.FEATURE_EXTRACTION,
                 r=lora_r,
@@ -90,14 +110,19 @@ class PLMEncoder(nn.Module):
         return "lora_" in name
 
     def _layer_index_of(self, name: str) -> Optional[int]:
-        """Return the encoder-layer index encoded in a parameter name, else None."""
-        marker = "encoder.layer."
-        pos = name.find(marker)
-        if pos == -1:
-            return None
-        rest = name[pos + len(marker):]
-        num = rest.split(".", 1)[0]
-        return int(num) if num.isdigit() else None
+        """Return the transformer-layer index encoded in a parameter name, else None.
+
+        Handles both BERT (``encoder.layer.N``) and DistilBERT
+        (``transformer.layer.N``) naming.
+        """
+        for marker in _LAYER_MARKERS:
+            pos = name.find(marker)
+            if pos == -1:
+                continue
+            rest = name[pos + len(marker):]
+            num = rest.split(".", 1)[0]
+            return int(num) if num.isdigit() else None
+        return None
 
     def set_trainable_layers(self, n: int) -> int:
         """

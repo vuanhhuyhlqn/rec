@@ -149,7 +149,7 @@ def load_news_and_tokens(cfg) -> Tuple:
     train_dir = cfg.get("data.train_dir", "dataset/train")
     dev_dir = cfg.get("data.dev_dir", "dataset/dev")
     max_title_len = int(cfg.get("data.max_title_len", 64))
-    plm_name = cfg.get("model.plm.model_name", "bert-base-uncased")
+    plm_name = cfg.get("model.plm.model_name", "distilbert-base-uncased")
     max_train = cfg.get("data.max_train_impressions")
     max_dev = cfg.get("data.max_dev_impressions")
 

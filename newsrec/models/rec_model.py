@@ -29,7 +29,7 @@ from newsrec.models.user_encoder import UserEncoder
 
 DEFAULT_MODEL_CONFIG = {
     "plm": {
-        "model_name": "bert-base-uncased",
+        "model_name": "distilbert-base-uncased",
         "pretrained": True,
         "use_lora": True,
         "lora_r": 8,
@@ -37,8 +37,8 @@ DEFAULT_MODEL_CONFIG = {
         "lora_dropout": 0.1,
     },
     "model_dim": 256,
-    "news_encoder": {"num_layers": 2, "num_heads": 8, "dropout": 0.1},
-    "user_encoder": {"num_layers": 2, "num_heads": 8, "dropout": 0.1},
+    "news_encoder": {"num_layers": 2, "num_heads": 16, "dropout": 0.1},
+    "user_encoder": {"num_layers": 2, "num_heads": 16, "dropout": 0.1},
     "score": {"type": "cosine", "temperature": 1.0},
     "max_title_len": 64,
     "max_history_len": 50,

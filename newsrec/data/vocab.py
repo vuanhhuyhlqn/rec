@@ -139,7 +139,7 @@ def build_category_vocab(
 class NewsTextEncoder:
     """Tokenise news text with a HuggingFace tokenizer to fixed-length ids."""
 
-    def __init__(self, tokenizer_name: str = "bert-base-uncased", max_len: int = 64):
+    def __init__(self, tokenizer_name: str = "distilbert-base-uncased", max_len: int = 64):
         from transformers import AutoTokenizer
 
         self.max_len = max_len

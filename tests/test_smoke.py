@@ -20,7 +20,7 @@ def test_configs_load_and_inherit_base():
     # presets correctly inherit base.yaml
     pre = load_config(os.path.join(CONFIG_DIR, "pretrain", "full.yaml"))
     assert pre.run_name == "pretrain_full"
-    assert pre.model.plm.model_name == "bert-base-uncased"  # from base
+    assert pre.model.plm.model_name == "distilbert-base-uncased"  # from base
     assert "aap" in pre.pretrain.tasks
 
     ft = load_config(os.path.join(CONFIG_DIR, "finetune", "paac.yaml"))
