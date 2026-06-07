@@ -35,6 +35,7 @@ DEFAULT_MODEL_CONFIG = {
         "lora_r": 8,
         "lora_alpha": 16,
         "lora_dropout": 0.1,
+        "gradient_checkpointing": False,
     },
     "model_dim": 256,
     "news_encoder": {"num_layers": 2, "num_heads": 16, "dropout": 0.1},

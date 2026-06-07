@@ -60,6 +60,7 @@ class PLMEncoder(nn.Module):
         lora_dropout: float = 0.1,
         lora_target_modules: Optional[List[str]] = None,
         small_config: Optional[dict] = None,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         from transformers import AutoModel, BertConfig, BertModel
@@ -103,6 +104,34 @@ class PLMEncoder(nn.Module):
         # LoRA-only: freeze the base backbone, train only the LoRA adapters.
         self._frozen_layers = self.num_layers
         self.set_trainable_layers(0)
+
+        self.gradient_checkpointing = gradient_checkpointing
+        if gradient_checkpointing:
+            self._enable_gradient_checkpointing()
+
+    def _enable_gradient_checkpointing(self) -> None:
+        """Trade compute for memory: recompute transformer-layer activations in
+        the backward pass instead of storing them.
+
+        The activation memory of encoding ``batch * history`` items through the
+        PLM is this model's bottleneck, so checkpointing lets the auto
+        batch-finder pick a much larger batch (more in-batch InfoNCE negatives)
+        at the cost of ~20-30% extra step compute.
+
+        With a frozen base (LoRA-only) the PLM's input embeddings don't require
+        grad, so checkpointing would otherwise have nothing to differentiate and
+        save no memory. ``enable_input_require_grads`` registers a forward hook
+        that makes the input embeddings require grad, so the recomputed graph
+        tracks gradients back to the LoRA adapters.
+        """
+        try:
+            self.bert.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+        except TypeError:  # older transformers: no kwargs arg
+            self.bert.gradient_checkpointing_enable()
+        if hasattr(self.bert, "enable_input_require_grads"):
+            self.bert.enable_input_require_grads()
 
     # ------------------------------------------------------------------ #
     # Layer freezing (LoRA-only by default)                              #

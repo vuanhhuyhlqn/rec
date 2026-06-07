@@ -77,3 +77,18 @@ def test_gradient_flows_to_lora():
     grads = [p.grad for n, p in enc.named_parameters()
              if p.requires_grad and "lora_B" in n]
     assert any(g is not None and g.abs().sum() > 0 for g in grads)
+
+
+def test_gradient_checkpointing_still_trains_lora():
+    # With a frozen base + checkpointing, gradients must still reach the LoRA
+    # adapters (enable_input_require_grads makes the recompute graph track them).
+    enc = PLMEncoder(pretrained=False, use_lora=True, lora_r=4,
+                     small_config=SMALL, gradient_checkpointing=True)
+    assert enc.gradient_checkpointing
+    enc.train()
+    ids = torch.randint(0, 200, (2, 8))
+    emb, _ = enc(ids)
+    emb.sum().backward()
+    grads = [p.grad for n, p in enc.named_parameters()
+             if p.requires_grad and "lora_B" in n]
+    assert any(g is not None and g.abs().sum() > 0 for g in grads)

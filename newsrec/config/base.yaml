@@ -28,6 +28,10 @@ model:
     lora_r: 8
     lora_alpha: 16
     lora_dropout: 0.1
+    # Recompute PLM activations in backward to free memory so the auto
+    # batch-finder can pick a much larger batch (more in-batch negatives).
+    # ~20-30% slower per step; set false to disable.
+    gradient_checkpointing: true
   model_dim: 256
   news_encoder:
     num_layers: 2
