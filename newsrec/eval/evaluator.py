@@ -10,7 +10,8 @@ Two-phase design (mirrors the representation caching in Legommenders):
 1. :meth:`encode_news_table` runs the (expensive) PLM + news encoder **once**
    over the unique news, producing a ``{news_id: vector}`` table.
 2. :meth:`evaluate` reuses those cached vectors: it only runs the (cheap) user
-   encoder + cosine scoring per impression, in mini-batches.
+   encoder + model scoring (dot product by default) per impression, in
+   mini-batches.
 
 The scoring path is intentionally decoupled from BERT so it can be unit-tested
 with arbitrary injected vectors.

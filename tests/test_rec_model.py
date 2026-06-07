@@ -9,7 +9,7 @@ SMALL_PLM = dict(hidden_size=32, num_hidden_layers=2, num_attention_heads=4,
                  intermediate_size=64, max_position_embeddings=64, vocab_size=200)
 
 
-def _build(model_dim=24):
+def _build(model_dim=24, score_type=None):
     cfg = {
         "plm": {"pretrained": False, "use_lora": True, "lora_r": 4,
                 "small_config": SMALL_PLM},
@@ -19,6 +19,8 @@ def _build(model_dim=24):
         "max_title_len": 16,
         "max_history_len": 20,
     }
+    if score_type is not None:
+        cfg["score"] = {"type": score_type, "temperature": 1.0}
     return build_rec_model(cfg).eval()
 
 
@@ -57,7 +59,7 @@ def test_forward_scores_shape():
 
 
 def test_cosine_bounds_and_identity():
-    model = _build(model_dim=16)
+    model = _build(model_dim=16, score_type="cosine")
     B, K, D = 3, 4, 16
     z_u = torch.randn(B, D)
     cand = torch.randn(B, K, D)
@@ -69,6 +71,21 @@ def test_cosine_bounds_and_identity():
     same = torch.randn(B, D)
     s = model.score(same, same.unsqueeze(1))
     assert torch.allclose(s.squeeze(1), torch.ones(B), atol=1e-5)
+
+
+def test_dot_is_default_and_unnormalized():
+    # Default scoring is the dot product (Legommenders DotPredictor): it must
+    # preserve magnitude, so scaling a candidate scales its score.
+    model = _build(model_dim=16)
+    assert model.score_type == "dot"
+    z_u = torch.randn(2, 16)
+    cand = torch.randn(2, 3, 16)
+    base = model.score(z_u, cand)
+    scaled = model.score(z_u, cand * 2.0)
+    assert torch.allclose(scaled, base * 2.0, atol=1e-4)
+    # equivalently sum(z_u * cand)
+    manual = (z_u.unsqueeze(1) * cand).sum(-1)
+    assert torch.allclose(base, manual, atol=1e-4)
 
 
 def test_single_candidate_score_shape():

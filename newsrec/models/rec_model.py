@@ -8,7 +8,7 @@ encoder + attention pooler) into an end-to-end two-tower model.
 * ``encode_news``  : token ids ``[..., L]`` → news vectors ``[..., D]``
 * ``encode_user``  : history token ids ``[B, S, L]`` → user vector ``z_u [B, D]``
   (also returns the per-position history states for pre-training).
-* ``score``        : cosine similarity between ``z_u`` and candidate vectors.
+* ``score``        : dot-product (default) or cosine between ``z_u`` and candidate vectors.
 
 The news vectors ``h_i`` and user vectors ``z_u`` produced here are exactly
 the objects consumed by the pre-training tasks and PAAC losses in later tasks.
@@ -40,7 +40,7 @@ DEFAULT_MODEL_CONFIG = {
     "model_dim": 256,
     "news_encoder": {"num_layers": 2, "num_heads": 16, "dropout": 0.1},
     "user_encoder": {"num_layers": 2, "num_heads": 16, "dropout": 0.1},
-    "score": {"type": "cosine", "temperature": 1.0},
+    "score": {"type": "dot", "temperature": 1.0},
     "max_title_len": 64,
     "max_history_len": 50,
 }
@@ -52,7 +52,7 @@ class NewsRecModel(nn.Module):
         plm: PLMEncoder,
         news_encoder: NewsEncoder,
         user_encoder: UserEncoder,
-        score_type: str = "cosine",
+        score_type: str = "dot",
         temperature: float = 1.0,
     ):
         super().__init__()

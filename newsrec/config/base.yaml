@@ -42,7 +42,11 @@ model:
     num_heads: 16
     dropout: 0.1
   score:
-    type: cosine
+    # Dot product (Legommenders default for NRMS/NAML/Fastformer). Cosine
+    # normalises away vector magnitude, which collapses under representation
+    # anisotropy (all scores ~0.96) and starves BPR of gradient. Use 'cosine'
+    # only if you also handle the anisotropy.
+    type: dot
     temperature: 1.0
   max_title_len: 64
   max_history_len: 50
